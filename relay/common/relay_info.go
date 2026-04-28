@@ -102,8 +102,16 @@ type RelayInfo struct {
 	UsePrice               bool
 	RelayMode              int
 	OriginModelName        string
+	RequestMethod          string
 	RequestURLPath         string
 	RequestHeaders         map[string]string
+	ResolvedRequestMethod  string
+	ResolvedRequestPath    string
+	ResolvedRequestQuery   map[string]string
+	ResolvedRequestURL     string
+	ResolvedRequestHeaders map[string]string
+	MatchedRestRouteName   string
+	RequestBodyJson        string
 	ShouldIncludeUsage     bool
 	DisablePing            bool // 是否禁止向下游发送自定义 Ping
 	ClientWs               *websocket.Conn
@@ -147,6 +155,7 @@ type RelayInfo struct {
 	SubscriptionAmountUsedAfterPreConsume int64
 	IsClaudeBetaQuery                     bool // /v1/messages?beta=true
 	IsChannelTest                         bool // channel test request
+	IsRequestPreview                      bool
 	RetryIndex                            int
 	LastError                             *types.NewAPIError
 	RuntimeHeadersOverride                map[string]interface{}
@@ -471,6 +480,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
+		RequestMethod:   c.Request.Method,
 		RequestURLPath:  c.Request.URL.String(),
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,

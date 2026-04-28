@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/imagepipeline"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
@@ -174,6 +176,7 @@ func ApplyParamOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, 
 	if len(paramOverride) == 0 {
 		return jsonData, nil
 	}
+	ResolveChannelRestRoute(info)
 
 	overrideCtx := BuildParamOverrideContext(info)
 	var recorder *paramOverrideAuditRecorder
@@ -360,6 +363,11 @@ func buildParamOverrideAuditLine(mode, path, from, to string, value interface{})
 			return ""
 		}
 		return fmt.Sprintf("sync_fields %s -> %s", from, to)
+	case "transform_media":
+		if from == "" || to == "" {
+			return ""
+		}
+		return fmt.Sprintf("transform_media %s -> %s %s", from, to, formatParamOverrideAuditValue(value))
 	case "return_error":
 		return fmt.Sprintf("return_error %s", formatParamOverrideAuditValue(value))
 	default:
@@ -911,6 +919,11 @@ func applyOperations(jsonStr string, operations []ParamOperation, conditionConte
 				auditRecorder.recordOperation("sync_fields", "", op.From, op.To, nil)
 				contextJSON, err = marshalContextJSON(context)
 			}
+		case "transform_media":
+			result, err = transformMediaValues(result, op, context)
+			if err == nil {
+				auditRecorder.recordOperation("transform_media", "", op.From, op.To, op.Value)
+			}
 		default:
 			return "", fmt.Errorf("unknown operation: %s", op.Mode)
 		}
@@ -1418,6 +1431,127 @@ func syncFieldsBetweenTargets(jsonStr string, context map[string]interface{}, fr
 		return writeSyncTargetValue(jsonStr, context, fromTarget, toValue)
 	}
 	return jsonStr, nil
+}
+
+func buildWildcardTargetPath(fromPattern string, resolvedFrom string, toPattern string) string {
+	if !strings.Contains(fromPattern, "*") || !strings.Contains(toPattern, "*") {
+		return toPattern
+	}
+	fromSegments := strings.Split(fromPattern, ".")
+	actualSegments := strings.Split(resolvedFrom, ".")
+	toSegments := strings.Split(toPattern, ".")
+	wildcardValues := make([]string, 0, strings.Count(fromPattern, "*"))
+	for index, segment := range fromSegments {
+		if segment == "*" && index < len(actualSegments) {
+			wildcardValues = append(wildcardValues, actualSegments[index])
+		}
+	}
+	wildcardIndex := 0
+	for index, segment := range toSegments {
+		if segment != "*" {
+			continue
+		}
+		if wildcardIndex < len(wildcardValues) {
+			toSegments[index] = wildcardValues[wildcardIndex]
+			wildcardIndex++
+		}
+	}
+	return strings.Join(toSegments, ".")
+}
+
+func parseImagePipelineOptions(value interface{}) (imagepipeline.ImagePipelineOptions, error) {
+	options := imagepipeline.ImagePipelineOptions{}
+	switch raw := value.(type) {
+	case map[string]interface{}:
+		if component, ok := raw["component"].(string); ok {
+			options.Component = component
+		}
+		if input, ok := raw["input"].(string); ok {
+			options.Input = input
+		}
+		if output, ok := raw["output"].(string); ok {
+			options.Output = output
+		}
+		if storage, ok := raw["storage"].(string); ok {
+			options.Storage = storage
+		}
+		if mimeType, ok := raw["mime_type"].(string); ok {
+			options.MimeType = mimeType
+		}
+		if quality, ok := parseOverrideInt(raw["quality"]); ok {
+			options.Quality = quality
+		}
+		if stripAlpha, ok := raw["strip_alpha"].(bool); ok {
+			options.StripAlpha = stripAlpha
+		}
+		if keepSize, ok := raw["keep_size"].(bool); ok {
+			options.KeepSize = keepSize
+		}
+		if maxDownloadMB, ok := parseOverrideInt(raw["max_download_mb"]); ok {
+			options.MaxDownloadMB = maxDownloadMB
+		}
+		return options, nil
+	case map[string]string:
+		converted := make(map[string]interface{}, len(raw))
+		for key, item := range raw {
+			converted[key] = item
+		}
+		return parseImagePipelineOptions(converted)
+	default:
+		return options, fmt.Errorf("transform_media value must be an object")
+	}
+}
+
+func transformMediaValues(jsonStr string, op ParamOperation, overrideCtx map[string]interface{}) (string, error) {
+	fromPattern := strings.TrimSpace(op.From)
+	if fromPattern == "" {
+		fromPattern = strings.TrimSpace(op.Path)
+	}
+	if fromPattern == "" {
+		return "", fmt.Errorf("transform_media from is required")
+	}
+
+	toPattern := strings.TrimSpace(op.To)
+	if toPattern == "" {
+		toPattern = fromPattern
+	}
+
+	options, err := parseImagePipelineOptions(op.Value)
+	if err != nil {
+		return "", err
+	}
+	if previewValue, ok := overrideCtx["is_request_preview"].(bool); ok {
+		options.DryRun = previewValue
+	}
+
+	fromPattern = processNegativeIndex(jsonStr, fromPattern)
+	fromPaths, err := resolveOperationPaths(jsonStr, fromPattern)
+	if err != nil {
+		return "", err
+	}
+	if len(fromPaths) == 0 {
+		return jsonStr, nil
+	}
+
+	result := jsonStr
+	for _, fromPath := range fromPaths {
+		currentValue := gjson.Get(result, fromPath)
+		if !currentValue.Exists() || currentValue.Type != gjson.String {
+			continue
+		}
+
+		targetPath := buildWildcardTargetPath(fromPattern, fromPath, toPattern)
+		transformed, err := imagepipeline.TransformImageValue(context.Background(), currentValue.String(), options)
+		if err != nil {
+			return "", err
+		}
+
+		result, err = sjson.Set(result, targetPath, transformed.Value)
+		if err != nil {
+			return "", err
+		}
+	}
+	return result, nil
 }
 
 func ensureMapKeyInContext(context map[string]interface{}, key string) map[string]interface{} {
@@ -2021,6 +2155,13 @@ func BuildParamOverrideContext(info *RelayInfo) map[string]interface{} {
 			ctx["request_path"] = requestPath
 		}
 	}
+	if info.RequestMethod != "" {
+		ctx["request_method"] = info.RequestMethod
+	}
+	if info.MatchedRestRouteName != "" {
+		ctx["matched_rest_route"] = info.MatchedRestRouteName
+	}
+	ctx["is_request_preview"] = info.IsRequestPreview
 
 	ctx[paramOverrideContextRequestHeaders] = buildRequestHeadersContext(info.RequestHeaders)
 

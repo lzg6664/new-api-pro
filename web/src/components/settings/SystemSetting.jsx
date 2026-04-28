@@ -110,6 +110,17 @@ const SystemSetting = () => {
     'fetch_setting.ip_list': [],
     'fetch_setting.allowed_ports': [],
     'fetch_setting.apply_ip_filter_for_domain': true,
+    'cos_setting.enabled': false,
+    'cos_setting.secret_id': '',
+    'cos_setting.secret_key': '',
+    'cos_setting.region': '',
+    'cos_setting.bucket': '',
+    'cos_setting.public_base_url': '',
+    'cos_setting.path_prefix': 'images',
+    'cos_setting.read_timeout_seconds': 120,
+    'cos_setting.max_upload_mb': 20,
+    'cos_setting.image_auto_store_mode': 'b64_only',
+    'cos_setting.image_auto_store_strict': false,
   });
 
   const [originInputs, setOriginInputs] = useState({});
@@ -132,7 +143,7 @@ const SystemSetting = () => {
     const res = await API.get('/api/option/');
     const { success, message, data } = res.data;
     if (success) {
-      let newInputs = {};
+      let newInputs = { ...inputs };
       data.forEach((item) => {
         switch (item.key) {
           case 'TopupGroupRatio':
@@ -146,6 +157,8 @@ const SystemSetting = () => {
           case 'fetch_setting.domain_filter_mode':
           case 'fetch_setting.ip_filter_mode':
           case 'fetch_setting.apply_ip_filter_for_domain':
+          case 'cos_setting.enabled':
+          case 'cos_setting.image_auto_store_strict':
             item.value = toBoolean(item.value);
             break;
           case 'fetch_setting.domain_list':
@@ -210,6 +223,16 @@ const SystemSetting = () => {
           case 'MinTopUp':
             item.value = parseFloat(item.value);
             break;
+          case 'cos_setting.read_timeout_seconds':
+          case 'cos_setting.max_upload_mb': {
+            const parsed = Number.parseInt(item.value, 10);
+            item.value = Number.isNaN(parsed)
+              ? item.key === 'cos_setting.read_timeout_seconds'
+                ? 120
+                : 20
+              : parsed;
+            break;
+          }
           default:
             break;
         }
@@ -400,6 +423,66 @@ const SystemSetting = () => {
     if (options.length > 0) {
       await updateOptions(options);
     }
+  };
+
+  const submitCOSSettings = async () => {
+    const formValues = formApiRef.current?.getValues() || {};
+    const nextValues = { ...inputs, ...formValues };
+    const options = [
+      {
+        key: 'cos_setting.enabled',
+        value: nextValues['cos_setting.enabled'] === true,
+      },
+      {
+        key: 'cos_setting.secret_id',
+        value: nextValues['cos_setting.secret_id'] || '',
+      },
+      {
+        key: 'cos_setting.region',
+        value: nextValues['cos_setting.region'] || '',
+      },
+      {
+        key: 'cos_setting.bucket',
+        value: nextValues['cos_setting.bucket'] || '',
+      },
+      {
+        key: 'cos_setting.public_base_url',
+        value: removeTrailingSlash(
+          nextValues['cos_setting.public_base_url'] || '',
+        ),
+      },
+      {
+        key: 'cos_setting.path_prefix',
+        value: nextValues['cos_setting.path_prefix'] || 'images',
+      },
+      {
+        key: 'cos_setting.read_timeout_seconds',
+        value: String(
+          nextValues['cos_setting.read_timeout_seconds'] || 120,
+        ),
+      },
+      {
+        key: 'cos_setting.max_upload_mb',
+        value: String(nextValues['cos_setting.max_upload_mb'] || 20),
+      },
+      {
+        key: 'cos_setting.image_auto_store_mode',
+        value: nextValues['cos_setting.image_auto_store_mode'] || 'b64_only',
+      },
+      {
+        key: 'cos_setting.image_auto_store_strict',
+        value: nextValues['cos_setting.image_auto_store_strict'] === true,
+      },
+    ];
+
+    if (nextValues['cos_setting.secret_key']) {
+      options.push({
+        key: 'cos_setting.secret_key',
+        value: nextValues['cos_setting.secret_key'],
+      });
+    }
+
+    await updateOptions(options);
   };
 
   const handleAddEmail = () => {
@@ -781,6 +864,125 @@ const SystemSetting = () => {
                     {t('允许 HTTP 协议图片请求（适用于自部署代理）')}
                   </Form.Checkbox>
                   <Button onClick={submitWorker}>{t('更新Worker设置')}</Button>
+                </Form.Section>
+              </Card>
+
+              <Card>
+                <Form.Section text={t('COS 存储设置')}>
+                  <Banner
+                    type='info'
+                    description={t(
+                      '用于图片 URL 下载转存、请求覆盖中的 transform_media 输出 URL，以及图片响应自动转存。',
+                    )}
+                    style={{ marginBottom: 20, marginTop: 16 }}
+                  />
+                  <Form.Checkbox field="['cos_setting.enabled']" noLabel>
+                    {t('启用腾讯云 COS')}
+                  </Form.Checkbox>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field="['cos_setting.secret_id']"
+                        label={t('SecretId')}
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field="['cos_setting.secret_key']"
+                        label={t('SecretKey')}
+                        type='password'
+                        placeholder={t('留空表示保持不变')}
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+                      <Form.Input
+                        field="['cos_setting.region']"
+                        label={t('Region')}
+                        placeholder='ap-guangzhou'
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+                      <Form.Input
+                        field="['cos_setting.bucket']"
+                        label={t('Bucket')}
+                        placeholder='example-1234567890'
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+                      <Form.Input
+                        field="['cos_setting.path_prefix']"
+                        label={t('路径前缀')}
+                        placeholder='images'
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field="['cos_setting.public_base_url']"
+                        label={t('公开访问地址')}
+                        placeholder='https://cdn.example.com'
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={6} lg={6} xl={6}>
+                      <Form.InputNumber
+                        field="['cos_setting.read_timeout_seconds']"
+                        label={t('下载超时(秒)')}
+                        min={1}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={6} lg={6} xl={6}>
+                      <Form.InputNumber
+                        field="['cos_setting.max_upload_mb']"
+                        label={t('最大上传(MB)')}
+                        min={1}
+                        style={{ width: '100%' }}
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Select
+                        field="['cos_setting.image_auto_store_mode']"
+                        label={t('图片自动转存模式')}
+                        optionList={[
+                          { label: 'off', value: 'off' },
+                          { label: 'b64_only', value: 'b64_only' },
+                          {
+                            label: 'url_and_b64',
+                            value: 'url_and_b64',
+                          },
+                        ]}
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Checkbox
+                        field="['cos_setting.image_auto_store_strict']"
+                        noLabel
+                        style={{ marginTop: 30 }}
+                      >
+                        {t('转存失败时严格报错')}
+                      </Form.Checkbox>
+                    </Col>
+                  </Row>
+                  <Button onClick={submitCOSSettings} style={{ marginTop: 16 }}>
+                    {t('保存 COS 设置')}
+                  </Button>
                 </Form.Section>
               </Card>
 

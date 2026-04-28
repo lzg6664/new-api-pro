@@ -287,7 +287,22 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 	}
 }
 
-func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+func snapshotRequestHeaders(req *http.Request) map[string]string {
+	if req == nil {
+		return nil
+	}
+	headers := make(map[string]string, len(req.Header))
+	for key := range req.Header {
+		value := strings.TrimSpace(req.Header.Get(key))
+		if value == "" {
+			continue
+		}
+		headers[strings.ToLower(strings.TrimSpace(key))] = value
+	}
+	return headers
+}
+
+func BuildAPIRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Request, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -295,7 +310,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if common2.DebugEnabled {
 		println("fullRequestURL:", fullRequestURL)
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequest(common.GetResolvedRequestMethod(info, c.Request.Method), fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -311,6 +326,18 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	if info != nil {
+		info.ResolvedRequestURL = fullRequestURL
+		info.ResolvedRequestHeaders = snapshotRequestHeaders(req)
+	}
+	return req, nil
+}
+
+func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	req, err := BuildAPIRequest(a, c, info, requestBody)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -318,7 +345,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	return resp, nil
 }
 
-func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+func BuildFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Request, error) {
 	fullRequestURL, err := a.GetRequestURL(info)
 	if err != nil {
 		return nil, fmt.Errorf("get request url failed: %w", err)
@@ -326,7 +353,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	if common2.DebugEnabled {
 		println("fullRequestURL:", fullRequestURL)
 	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
+	req, err := http.NewRequest(common.GetResolvedRequestMethod(info, c.Request.Method), fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -344,6 +371,18 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	if info != nil {
+		info.ResolvedRequestURL = fullRequestURL
+		info.ResolvedRequestHeaders = snapshotRequestHeaders(req)
+	}
+	return req, nil
+}
+
+func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
+	req, err := BuildFormRequest(a, c, info, requestBody)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

@@ -62,6 +62,7 @@ import SingleModelSelectModal from './SingleModelSelectModal';
 import OllamaModelModal from './OllamaModelModal';
 import CodexOAuthModal from './CodexOAuthModal';
 import ParamOverrideEditorModal from './ParamOverrideEditorModal';
+import RequestPreviewModal from './RequestPreviewModal';
 import JSONEditor from '../../../common/ui/JSONEditor';
 import SecureVerificationModal from '../../../common/modals/SecureVerificationModal';
 import StatusCodeRiskGuardModal from './StatusCodeRiskGuardModal';
@@ -95,6 +96,26 @@ const MODEL_MAPPING_EXAMPLE = {
 const STATUS_CODE_MAPPING_EXAMPLE = {
   400: '500',
 };
+
+const REST_ROUTE_TEMPLATE = [
+  {
+    name: 'gemini-generate-content',
+    enabled: true,
+    priority: 100,
+    match: {
+      request_path_prefix: '/v1/chat/completions',
+      method: 'POST',
+      model_prefix: 'gemini/',
+    },
+    target: {
+      method: 'POST',
+      path: '/v1beta/models/{model}:generateContent',
+      query: {
+        alt: 'json',
+      },
+    },
+  },
+];
 
 const REGION_EXAMPLE = {
   default: 'global',
@@ -179,6 +200,7 @@ const EditChannelModal = (props) => {
     other: '',
     model_mapping: '',
     param_override: '',
+    rest_routes: '',
     status_code_mapping: '',
     models: [],
     auto_ban: 1,
@@ -241,6 +263,7 @@ const EditChannelModal = (props) => {
   const [modelMappingValueSelected, setModelMappingValueSelected] =
     useState('');
   const [ollamaModalVisible, setOllamaModalVisible] = useState(false);
+  const [requestPreviewVisible, setRequestPreviewVisible] = useState(false);
   const formApiRef = useRef(null);
   const [vertexKeys, setVertexKeys] = useState([]);
   const [vertexFileList, setVertexFileList] = useState([]);
@@ -517,6 +540,8 @@ const EditChannelModal = (props) => {
     proxy: '',
     pass_through_body_enabled: false,
     system_prompt: '',
+    system_prompt_override: false,
+    image_generation_model_prefixes: [],
   });
   const showApiConfigCard = true; // 控制是否显示 API 配置卡片
   const getInitValues = () => ({ ...originInputs });
@@ -870,6 +895,8 @@ const EditChannelModal = (props) => {
           data.system_prompt = parsedSettings.system_prompt || '';
           data.system_prompt_override =
             parsedSettings.system_prompt_override || false;
+          data.image_generation_model_prefixes =
+            parsedSettings.image_generation_model_prefixes || [];
         } catch (error) {
           console.error('解析渠道设置失败:', error);
           data.force_format = false;
@@ -878,6 +905,7 @@ const EditChannelModal = (props) => {
           data.pass_through_body_enabled = false;
           data.system_prompt = '';
           data.system_prompt_override = false;
+          data.image_generation_model_prefixes = [];
         }
       } else {
         data.force_format = false;
@@ -886,6 +914,7 @@ const EditChannelModal = (props) => {
         data.pass_through_body_enabled = false;
         data.system_prompt = '';
         data.system_prompt_override = false;
+        data.image_generation_model_prefixes = [];
       }
 
       if (data.settings) {
@@ -927,6 +956,11 @@ const EditChannelModal = (props) => {
           )
             ? parsedSettings.upstream_model_update_ignored_models.join(',')
             : '';
+          data.rest_routes =
+            Array.isArray(parsedSettings.rest_routes) &&
+            parsedSettings.rest_routes.length > 0
+              ? JSON.stringify(parsedSettings.rest_routes, null, 2)
+              : '';
         } catch (error) {
           console.error('解析其他设置失败:', error);
           data.azure_responses_version = '';
@@ -946,6 +980,7 @@ const EditChannelModal = (props) => {
           data.upstream_model_update_last_check_time = 0;
           data.upstream_model_update_last_detected_models = [];
           data.upstream_model_update_ignored_models = '';
+          data.rest_routes = '';
         }
       } else {
         // 兼容历史数据：老渠道没有 settings 时，默认按 json 展示
@@ -964,6 +999,7 @@ const EditChannelModal = (props) => {
         data.upstream_model_update_last_check_time = 0;
         data.upstream_model_update_last_detected_models = [];
         data.upstream_model_update_ignored_models = '';
+        data.rest_routes = '';
       }
 
       if (
@@ -995,6 +1031,7 @@ const EditChannelModal = (props) => {
         pass_through_body_enabled: data.pass_through_body_enabled,
         system_prompt: data.system_prompt,
         system_prompt_override: data.system_prompt_override || false,
+        image_generation_model_prefixes: data.image_generation_model_prefixes || [],
       });
       initialModelsRef.current = (data.models || [])
         .map((model) => (model || '').trim())
@@ -1025,6 +1062,7 @@ const EditChannelModal = (props) => {
       const hasAdvancedValues =
         (data.model_mapping && data.model_mapping.trim()) ||
         (data.param_override && data.param_override.trim()) ||
+        (data.rest_routes && data.rest_routes.trim()) ||
         (data.status_code_mapping && data.status_code_mapping.trim()) ||
         (data.header_override && data.header_override.trim()) ||
         (data.tag && data.tag.trim()) ||
@@ -1767,6 +1805,27 @@ const EditChannelModal = (props) => {
       }
     }
 
+    let parsedRestRoutes = null;
+    if (
+      typeof localInputs.rest_routes === 'string' &&
+      localInputs.rest_routes.trim() !== ''
+    ) {
+      if (!verifyJSON(localInputs.rest_routes)) {
+        showError(t('REST 路由必须是合法的 JSON 数组'));
+        return;
+      }
+      try {
+        parsedRestRoutes = JSON.parse(localInputs.rest_routes);
+      } catch (error) {
+        showError(t('REST 路由必须是合法的 JSON 数组'));
+        return;
+      }
+      if (!Array.isArray(parsedRestRoutes)) {
+        showError(t('REST 路由必须是 JSON 数组'));
+        return;
+      }
+    }
+
     // type === 20: 设置企业账户标识，无论是true还是false都要传到后端
     if (localInputs.type === 20) {
       settings.openrouter_enterprise =
@@ -1825,6 +1884,11 @@ const EditChannelModal = (props) => {
     if (typeof settings.upstream_model_update_last_check_time !== 'number') {
       settings.upstream_model_update_last_check_time = 0;
     }
+    if (Array.isArray(parsedRestRoutes) && parsedRestRoutes.length > 0) {
+      settings.rest_routes = parsedRestRoutes;
+    } else {
+      delete settings.rest_routes;
+    }
 
     localInputs.settings = JSON.stringify(settings);
 
@@ -1853,6 +1917,7 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_last_check_time;
     delete localInputs.upstream_model_update_last_detected_models;
     delete localInputs.upstream_model_update_ignored_models;
+    delete localInputs.rest_routes;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -2334,6 +2399,21 @@ const EditChannelModal = (props) => {
                         </Dropdown>
                       </Space>
                     </div>
+                    <div className='mb-2'>
+                      {isEdit ? (
+                        <Button
+                          size='small'
+                          type='tertiary'
+                          onClick={() => setRequestPreviewVisible(true)}
+                        >
+                          {t('请求预览')}
+                        </Button>
+                      ) : (
+                        <Text type='tertiary' size='small'>
+                          {t('请求预览需要先保存渠道')}
+                        </Text>
+                      )}
+                    </div>
                     <Text type='tertiary' size='small'>
                       {t('此项可选，用于覆盖请求参数。不支持覆盖 stream 参数')}
                     </Text>
@@ -2438,6 +2518,54 @@ const EditChannelModal = (props) => {
                     formApi={formApiRef.current}
                     extraText={t('键为原状态码，值为要复写的状态码，仅影响本地判断')}
                   />
+                  <Form.TextArea
+                    field='rest_routes'
+                    label={t('动态 REST 路由')}
+                    placeholder={
+                      t('用于按请求路径、模型、方法动态改写上游 method/path/query，格式为 JSON 数组，例如：') +
+                      '\n' +
+                      JSON.stringify(REST_ROUTE_TEMPLATE, null, 2)
+                    }
+                    autosize
+                    value={inputs.rest_routes || ''}
+                    onChange={(value) => handleInputChange('rest_routes', value)}
+                    extraText={
+                      <div className='flex flex-col gap-1'>
+                        <div className='flex gap-2 flex-wrap items-center'>
+                          <Text
+                            className='!text-semi-color-primary cursor-pointer'
+                            onClick={() =>
+                              handleInputChange(
+                                'rest_routes',
+                                JSON.stringify(REST_ROUTE_TEMPLATE, null, 2),
+                              )
+                            }
+                          >
+                            {t('填入模板')}
+                          </Text>
+                          <Text
+                            className='!text-semi-color-primary cursor-pointer'
+                            onClick={() => formatJsonField('rest_routes')}
+                          >
+                            {t('格式化')}
+                          </Text>
+                        </div>
+                        <Text type='tertiary' size='small'>
+                          {t(
+                            '每一项都是一条路由规则，支持 request_path / request_path_prefix / method / relay_mode / model_prefix 匹配，并可在 path 中使用 {model}、{original_model}、{request_path}、{request_method} 模板变量。',
+                          )}
+                        </Text>
+                        {inputs.type === 8 ? (
+                          <Text type='tertiary' size='small'>
+                            {t(
+                              '自定义渠道可将 base_url 配成根域名，再通过这里的规则决定最终 REST 路径。',
+                            )}
+                          </Text>
+                        ) : null}
+                      </div>
+                    }
+                    showClear
+                  />
                 </div>
 
                 {/* Channel Behavior Section */}
@@ -2530,6 +2658,11 @@ const EditChannelModal = (props) => {
 
                   <Form.TextArea field='system_prompt' label={t('系统提示词')} placeholder={t('输入系统提示词，用户的系统提示词将优先于此设置')} onChange={(value) => handleChannelSettingsChange('system_prompt', value)} autosize showClear extraText={t('用户优先：如果用户在请求中指定了系统提示词，将优先使用用户的设置')} />
                   <Form.Switch field='system_prompt_override' label={t('系统提示词拼接')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelSettingsChange('system_prompt_override', value)} extraText={t('如果用户请求中包含系统提示词，则使用此设置拼接到用户的系统提示词前面')} />
+
+                  {/* Gemini 渠道专有：图片生成模型前缀 */}
+                  {inputs.type === 24 && (
+                    <Form.TagInput field='image_generation_model_prefixes' label={t('图片生成模型前缀')} placeholder={t('输入前缀后按回车，例如: gemini-3.1-flash-image')} onChange={(value) => handleChannelSettingsChange('image_generation_model_prefixes', value)} extraText={t('命中这些前缀的模型将被视为图片生成模型（Gemini渠道），请求体将转换为 Gemini chat 格式并追加 responseModalities: [\"IMAGE\"]')} />
+                  )}
                 </div>
               </div>
             );
@@ -3853,6 +3986,13 @@ const EditChannelModal = (props) => {
           handleInputChange('param_override', nextValue);
           setParamOverrideEditorVisible(false);
         }}
+      />
+
+      <RequestPreviewModal
+        visible={requestPreviewVisible}
+        channelId={channelId}
+        defaultModel={inputs.test_model || inputs.models?.[0] || 'gpt-4o-mini'}
+        onCancel={() => setRequestPreviewVisible(false)}
       />
 
       <ModelSelectModal

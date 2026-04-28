@@ -106,6 +106,16 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			info.ChannelBaseUrl = baseUrl
 		}
 	}
+	if info.ChannelType != constant.ChannelTypeAzure {
+		relaycommon.ResolveChannelRestRoute(info)
+		if info.MatchedRestRouteName != "" {
+			return relaycommon.BuildResolvedURL(
+				info.ChannelBaseUrl,
+				relaycommon.GetResolvedRequestPath(info, info.RequestURLPath),
+				relaycommon.GetResolvedRequestQuery(info),
+			), nil
+		}
+	}
 	switch info.ChannelType {
 	case constant.ChannelTypeAzure:
 		apiVersion := info.ApiVersion

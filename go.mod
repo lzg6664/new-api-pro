@@ -42,6 +42,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/stripe/stripe-go/v81 v81.4.0
 	github.com/tcolgate/mp3 v0.0.0-20170426193717-e79c5a46d300
+	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
 	github.com/thanhpk/randstr v1.0.6
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
@@ -58,6 +59,12 @@ require (
 	gorm.io/driver/mysql v1.4.3
 	gorm.io/driver/postgres v1.5.2
 	gorm.io/gorm v1.25.2
+)
+
+require (
+	github.com/clbanning/mxj v1.8.4 // indirect
+	github.com/google/go-querystring v1.0.0 // indirect
+	github.com/mozillazg/go-httpheader v0.2.1 // indirect
 )
 
 require (

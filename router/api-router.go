@@ -207,6 +207,11 @@ func SetApiRouter(router *gin.Engine) {
 			ratioSyncRoute.GET("/channels", controller.GetSyncableChannels)
 			ratioSyncRoute.POST("/fetch", controller.FetchUpstreamRatios)
 		}
+		fileRoute := apiRouter.Group("/file")
+		fileRoute.Use(middleware.AdminAuth())
+		{
+			fileRoute.POST("/transfer", controller.TransferFile)
+		}
 		channelRoute := apiRouter.Group("/channel")
 		channelRoute.Use(middleware.AdminAuth())
 		{
@@ -249,6 +254,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.POST("/upstream_updates/apply_all", controller.ApplyAllChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect", controller.DetectChannelUpstreamModelUpdates)
 			channelRoute.POST("/upstream_updates/detect_all", controller.DetectAllChannelUpstreamModelUpdates)
+			channelRoute.POST("/:id/request-preview", controller.ChannelRequestPreview)
 		}
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

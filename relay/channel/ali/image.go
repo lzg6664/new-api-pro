@@ -333,11 +333,9 @@ func aliImageHandler(a *Adaptor, c *gin.Context, resp *http.Response, info *rela
 	} else if len(imageResponses.Data) != 0 {
 		info.PriceData.AddOtherRatio("n", float64(len(imageResponses.Data)))
 	}
-	jsonResponse, err := common.Marshal(imageResponses)
-	if err != nil {
-		return types.NewError(err, types.ErrorCodeBadResponseBody), nil
+	if newAPIError := relaycommon.WriteImageResponse(c, info, resp.StatusCode, imageResponses); newAPIError != nil {
+		return newAPIError, nil
 	}
-	service.IOCopyBytesGracefully(c, resp, jsonResponse)
 
 	return nil, &dto.Usage{}
 }

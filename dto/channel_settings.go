@@ -7,6 +7,36 @@ type ChannelSettings struct {
 	PassThroughBodyEnabled bool   `json:"pass_through_body_enabled,omitempty"`
 	SystemPrompt           string `json:"system_prompt,omitempty"`
 	SystemPromptOverride   bool   `json:"system_prompt_override,omitempty"`
+	// ImageGenerationModelPrefixes defines model name prefixes that should be
+	// treated as image generation models (converted to Gemini/Imagen format).
+	// This is needed for proxy channels where the upstream uses Gemini format
+	// but the model names don't start with "imagen-".
+	// Example: ["gemini-3.1-flash-image", "gemini-3-pro-image"]
+	ImageGenerationModelPrefixes []string `json:"image_generation_model_prefixes,omitempty"`
+}
+
+type RestRouteRule struct {
+	Name     string          `json:"name,omitempty"`
+	Enabled  bool            `json:"enabled,omitempty"`
+	Priority int             `json:"priority,omitempty"`
+	Match    RestRouteMatch  `json:"match,omitempty"`
+	Target   RestRouteTarget `json:"target,omitempty"`
+}
+
+type RestRouteMatch struct {
+	RequestPath             string `json:"request_path,omitempty"`
+	RequestPathPrefix       string `json:"request_path_prefix,omitempty"`
+	Method                  string `json:"method,omitempty"`
+	RelayMode               string `json:"relay_mode,omitempty"`
+	ModelPrefix             string `json:"model_prefix,omitempty"`
+	RequestBodyFieldExists  string `json:"request_body_field_exists,omitempty"`
+	RequestBodyFieldMissing string `json:"request_body_field_missing,omitempty"`
+}
+
+type RestRouteTarget struct {
+	Method string            `json:"method,omitempty"`
+	Path   string            `json:"path,omitempty"`
+	Query  map[string]string `json:"query,omitempty"`
 }
 
 type VertexKeyType string
@@ -19,28 +49,29 @@ const (
 type AwsKeyType string
 
 const (
-	AwsKeyTypeAKSK   AwsKeyType = "ak_sk" // 默认
+	AwsKeyTypeAKSK   AwsKeyType = "ak_sk"
 	AwsKeyTypeApiKey AwsKeyType = "api_key"
 )
 
 type ChannelOtherSettings struct {
-	AzureResponsesVersion                 string        `json:"azure_responses_version,omitempty"`
-	VertexKeyType                         VertexKeyType `json:"vertex_key_type,omitempty"` // "json" or "api_key"
-	OpenRouterEnterprise                  *bool         `json:"openrouter_enterprise,omitempty"`
-	ClaudeBetaQuery                       bool          `json:"claude_beta_query,omitempty"`         // Claude 渠道是否强制追加 ?beta=true
-	AllowServiceTier                      bool          `json:"allow_service_tier,omitempty"`        // 是否允许 service_tier 透传（默认过滤以避免额外计费）
-	AllowInferenceGeo                     bool          `json:"allow_inference_geo,omitempty"`       // 是否允许 inference_geo 透传（仅 Claude，默认过滤以满足数据驻留合规
-	AllowSpeed                            bool          `json:"allow_speed,omitempty"`               // 是否允许 speed 透传（仅 Claude，默认过滤以避免意外切换推理速度模式）
-	AllowSafetyIdentifier                 bool          `json:"allow_safety_identifier,omitempty"`   // 是否允许 safety_identifier 透传（默认过滤以保护用户隐私）
-	DisableStore                          bool          `json:"disable_store,omitempty"`             // 是否禁用 store 透传（默认允许透传，禁用后可能导致 Codex 无法使用）
-	AllowIncludeObfuscation               bool          `json:"allow_include_obfuscation,omitempty"` // 是否允许 stream_options.include_obfuscation 透传（默认过滤以避免关闭流混淆保护）
-	AwsKeyType                            AwsKeyType    `json:"aws_key_type,omitempty"`
-	UpstreamModelUpdateCheckEnabled       bool          `json:"upstream_model_update_check_enabled,omitempty"`        // 是否检测上游模型更新
-	UpstreamModelUpdateAutoSyncEnabled    bool          `json:"upstream_model_update_auto_sync_enabled,omitempty"`    // 是否自动同步上游模型更新
-	UpstreamModelUpdateLastCheckTime      int64         `json:"upstream_model_update_last_check_time,omitempty"`      // 上次检测时间
-	UpstreamModelUpdateLastDetectedModels []string      `json:"upstream_model_update_last_detected_models,omitempty"` // 上次检测到的可加入模型
-	UpstreamModelUpdateLastRemovedModels  []string      `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
-	UpstreamModelUpdateIgnoredModels      []string      `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
+	AzureResponsesVersion                 string          `json:"azure_responses_version,omitempty"`
+	VertexKeyType                         VertexKeyType   `json:"vertex_key_type,omitempty"`
+	OpenRouterEnterprise                  *bool           `json:"openrouter_enterprise,omitempty"`
+	ClaudeBetaQuery                       bool            `json:"claude_beta_query,omitempty"`
+	AllowServiceTier                      bool            `json:"allow_service_tier,omitempty"`
+	AllowInferenceGeo                     bool            `json:"allow_inference_geo,omitempty"`
+	AllowSpeed                            bool            `json:"allow_speed,omitempty"`
+	AllowSafetyIdentifier                 bool            `json:"allow_safety_identifier,omitempty"`
+	DisableStore                          bool            `json:"disable_store,omitempty"`
+	AllowIncludeObfuscation               bool            `json:"allow_include_obfuscation,omitempty"`
+	AwsKeyType                            AwsKeyType      `json:"aws_key_type,omitempty"`
+	UpstreamModelUpdateCheckEnabled       bool            `json:"upstream_model_update_check_enabled,omitempty"`
+	UpstreamModelUpdateAutoSyncEnabled    bool            `json:"upstream_model_update_auto_sync_enabled,omitempty"`
+	UpstreamModelUpdateLastCheckTime      int64           `json:"upstream_model_update_last_check_time,omitempty"`
+	UpstreamModelUpdateLastDetectedModels []string        `json:"upstream_model_update_last_detected_models,omitempty"`
+	UpstreamModelUpdateLastRemovedModels  []string        `json:"upstream_model_update_last_removed_models,omitempty"`
+	UpstreamModelUpdateIgnoredModels      []string        `json:"upstream_model_update_ignored_models,omitempty"`
+	RestRoutes                            []RestRouteRule `json:"rest_routes,omitempty"`
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

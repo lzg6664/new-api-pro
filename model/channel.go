@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/samber/lo"
@@ -846,6 +847,15 @@ func (channel *Channel) ValidateSettings() error {
 	if channel.Setting != nil && *channel.Setting != "" {
 		err := common.Unmarshal([]byte(*channel.Setting), channelParams)
 		if err != nil {
+			return err
+		}
+	}
+	otherSettings := &dto.ChannelOtherSettings{}
+	if channel.OtherSettings != "" {
+		if err := common.UnmarshalJsonStr(channel.OtherSettings, otherSettings); err != nil {
+			return err
+		}
+		if err := relaycommon.ValidateRestRouteRules(otherSettings.RestRoutes); err != nil {
 			return err
 		}
 	}

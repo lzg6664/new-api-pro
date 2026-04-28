@@ -63,6 +63,7 @@ const OPERATION_MODE_OPTIONS = [
   { label: '清理对象项', value: 'prune_objects' },
   { label: '请求头透传', value: 'pass_headers' },
   { label: '字段同步', value: 'sync_fields' },
+  { label: '媒体转换组件', value: 'transform_media' },
   { label: '设置请求头', value: 'set_header' },
   { label: '删除请求头', value: 'delete_header' },
   { label: '复制请求头', value: 'copy_header' },
@@ -108,6 +109,7 @@ const MODE_META = {
   prune_objects: { pathOptional: true, value: true },
   pass_headers: { value: true, keepOrigin: true },
   sync_fields: { from: true, to: true },
+  transform_media: { from: true, to: true, value: true },
   set_header: { path: true, value: true, keepOrigin: true },
   delete_header: { path: true },
   copy_header: { from: true, to: true, keepOrigin: true, pathAlias: true },
@@ -123,6 +125,7 @@ const VALUE_REQUIRED_MODES = new Set([
   'return_error',
   'prune_objects',
   'pass_headers',
+  'transform_media',
 ]);
 
 const FROM_REQUIRED_MODES = new Set([
@@ -163,6 +166,8 @@ const MODE_DESCRIPTIONS = {
   prune_objects: '按条件清理对象中的子项',
   pass_headers: '把指定请求头透传到上游请求',
   sync_fields: '在一个字段有值、另一个缺失时自动补齐',
+  transform_media:
+    '按组件配置把图片字段转换成 base64、data URL 或 COS URL',
   set_header: '设置运行期请求头：可直接覆盖整条值，也可对逗号分隔的 token 做删除、替换、追加或白名单保留',
   delete_header: '删除运行期请求头',
   copy_header: '复制请求头',
@@ -187,6 +192,7 @@ const getModePathPlaceholder = (mode) => {
 };
 
 const getModeFromLabel = (mode) => {
+  if (mode === 'transform_media') return '源字段';
   if (mode === 'replace') return '匹配文本';
   if (mode === 'regex_replace') return '正则表达式';
   if (mode === 'copy_header' || mode === 'move_header') return '来源请求头';
@@ -194,6 +200,7 @@ const getModeFromLabel = (mode) => {
 };
 
 const getModeFromPlaceholder = (mode) => {
+  if (mode === 'transform_media') return 'messages.*.content.*.image_url.url';
   if (mode === 'replace') return 'openai/';
   if (mode === 'regex_replace') return '^gpt-';
   if (mode === 'copy_header' || mode === 'move_header') return 'Authorization';
@@ -201,12 +208,14 @@ const getModeFromPlaceholder = (mode) => {
 };
 
 const getModeToLabel = (mode) => {
+  if (mode === 'transform_media') return '目标字段';
   if (mode === 'replace' || mode === 'regex_replace') return '替换为';
   if (mode === 'copy_header' || mode === 'move_header') return '目标请求头';
   return '目标字段';
 };
 
 const getModeToPlaceholder = (mode) => {
+  if (mode === 'transform_media') return 'messages.*.content.*.image_url.url';
   if (mode === 'replace') return '（可留空）';
   if (mode === 'regex_replace') return 'openai/gpt-';
   if (mode === 'copy_header' || mode === 'move_header') return 'X-Upstream-Auth';
@@ -214,6 +223,7 @@ const getModeToPlaceholder = (mode) => {
 };
 
 const getModeValueLabel = (mode) => {
+  if (mode === 'transform_media') return '组件配置（JSON 对象）';
   if (mode === 'set_header') return '请求头值（支持字符串或 JSON 映射）';
   if (mode === 'pass_headers') return '透传请求头（支持逗号分隔或 JSON 数组）';
   if (
@@ -242,6 +252,23 @@ const HEADER_VALUE_JSONC_EXAMPLE = `{
 }`;
 
 const getModeValuePlaceholder = (mode) => {
+  if (mode === 'transform_media') {
+    return JSON.stringify(
+      {
+        component: 'image_pipeline',
+        input: 'auto',
+        output: 'url',
+        storage: 'cos',
+        mime_type: 'image/jpeg',
+        quality: 92,
+        strip_alpha: false,
+        keep_size: true,
+        max_download_mb: 20,
+      },
+      null,
+      2,
+    );
+  }
   if (mode === 'set_header') {
     return [
       '纯字符串（整条覆盖）：',
@@ -340,6 +367,29 @@ const GEMINI_IMAGE_4K_TEMPLATE = {
   ],
 };
 
+const IMAGE_PIPELINE_TO_COS_TEMPLATE = {
+  operations: [
+    {
+      description:
+        'Convert image URL fields to COS URLs before sending to upstream.',
+      mode: 'transform_media',
+      from: 'messages.*.content.*.image_url.url',
+      to: 'messages.*.content.*.image_url.url',
+      value: {
+        component: 'image_pipeline',
+        input: 'auto',
+        output: 'url',
+        storage: 'cos',
+        mime_type: 'image/jpeg',
+        quality: 92,
+        strip_alpha: false,
+        keep_size: true,
+        max_download_mb: 20,
+      },
+    },
+  ],
+};
+
 const AWS_BEDROCK_ANTHROPIC_COMPAT_TEMPLATE = {
   operations: [
     {
@@ -416,6 +466,12 @@ const TEMPLATE_PRESET_CONFIG = {
     label: 'Gemini 图片 4K',
     kind: 'operations',
     payload: GEMINI_IMAGE_4K_TEMPLATE,
+  },
+  image_pipeline_to_cos: {
+    group: 'scenario',
+    label: '图片 URL 转 COS',
+    kind: 'operations',
+    payload: IMAGE_PIPELINE_TO_COS_TEMPLATE,
   },
   claude_cli_headers_passthrough: {
     group: 'scenario',
@@ -1047,6 +1103,30 @@ const validateOperations = (operations, t) => {
         }
       } catch (error) {
         // non-JSON string is treated as type string
+      }
+    }
+
+    if (mode === 'transform_media') {
+      const raw = String(op.value_text ?? '').trim();
+      if (!raw) {
+        return t('第{{line}} 条 transform_media 缺少组件配置', { line });
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return t('第{{line}} 条 transform_media 配置必须是 JSON 对象', {
+            line,
+          });
+        }
+        if (!String(parsed.component || '').trim()) {
+          return t('第{{line}} 条 transform_media 缺少 component 字段', {
+            line,
+          });
+        }
+      } catch (error) {
+        return t('第{{line}} 条 transform_media 配置必须是合法 JSON', {
+          line,
+        });
       }
     }
 

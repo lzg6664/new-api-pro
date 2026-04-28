@@ -1569,14 +1569,9 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		})
 	}
 
-	jsonResponse, jsonErr := json.Marshal(openAIResponse)
-	if jsonErr != nil {
-		return nil, types.NewError(jsonErr, types.ErrorCodeBadResponseBody)
+	if newAPIError := relaycommon.WriteImageResponse(c, info, resp.StatusCode, &openAIResponse); newAPIError != nil {
+		return nil, newAPIError
 	}
-
-	c.Writer.Header().Set("Content-Type", "application/json")
-	c.Writer.WriteHeader(resp.StatusCode)
-	_, _ = c.Writer.Write(jsonResponse)
 
 	// https://github.com/google-gemini/cookbook/blob/719a27d752aac33f39de18a8d3cb42a70874917e/quickstarts/Counting_Tokens.ipynb
 	// each image has fixed 258 tokens
@@ -1587,6 +1582,66 @@ func GeminiImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.
 		PromptTokens:     imageTokens * generatedImages, // each generated image has fixed 258 tokens
 		CompletionTokens: 0,                             // image generation does not calculate completion tokens
 		TotalTokens:      imageTokens * generatedImages,
+	}
+
+	return usage, nil
+}
+
+// GeminiChatImageHandler handles Gemini chat-format responses that contain images.
+// This is used for models like gemini-3.1-flash-image-preview that use the
+// generateContent endpoint with responseModalities: ["IMAGE"].
+func GeminiChatImageHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	responseBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, types.NewOpenAIError(readErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+	_ = resp.Body.Close()
+
+	var geminiResponse dto.GeminiChatResponse
+	if jsonErr := common.Unmarshal(responseBody, &geminiResponse); jsonErr != nil {
+		return nil, types.NewOpenAIError(jsonErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+
+	// convert to openai format response
+	openAIResponse := dto.ImageResponse{
+		Created: common.GetTimestamp(),
+		Data:    make([]dto.ImageData, 0, len(geminiResponse.Candidates)),
+	}
+
+	for _, candidate := range geminiResponse.Candidates {
+		if candidate.Content.Role == "model" {
+			for _, part := range candidate.Content.Parts {
+				if part.InlineData != nil && strings.HasPrefix(part.InlineData.MimeType, "image/") {
+					openAIResponse.Data = append(openAIResponse.Data, dto.ImageData{
+						B64Json: part.InlineData.Data,
+					})
+				}
+			}
+		}
+	}
+
+	if len(openAIResponse.Data) == 0 {
+		return nil, types.NewOpenAIError(errors.New("no images generated"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
+
+	if newAPIError := relaycommon.WriteImageResponse(c, info, resp.StatusCode, &openAIResponse); newAPIError != nil {
+		return nil, newAPIError
+	}
+
+	const imageTokens = 258
+	generatedImages := len(openAIResponse.Data)
+
+	usage := &dto.Usage{
+		PromptTokens:     geminiResponse.UsageMetadata.PromptTokenCount,
+		CompletionTokens: geminiResponse.UsageMetadata.CandidatesTokenCount,
+		TotalTokens:      geminiResponse.UsageMetadata.TotalTokenCount,
+	}
+
+	// Fallback if usage metadata is empty
+	if usage.TotalTokens == 0 {
+		usage.PromptTokens = imageTokens * generatedImages
+		usage.CompletionTokens = 0
+		usage.TotalTokens = imageTokens * generatedImages
 	}
 
 	return usage, nil
