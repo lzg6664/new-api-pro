@@ -1583,6 +1583,26 @@ const EditChannelModal = (props) => {
     const formValues = formApiRef.current ? formApiRef.current.getValues() : {};
     let localInputs = { ...formValues };
     localInputs.param_override = inputs.param_override;
+    localInputs.header_override = inputs.header_override;
+    localInputs.rest_routes = inputs.rest_routes;
+    localInputs.force_format = inputs.force_format;
+    localInputs.thinking_to_content = inputs.thinking_to_content;
+    localInputs.proxy = inputs.proxy;
+    localInputs.pass_through_body_enabled = inputs.pass_through_body_enabled;
+    localInputs.system_prompt = inputs.system_prompt;
+    localInputs.system_prompt_override = inputs.system_prompt_override;
+    localInputs.image_generation_model_prefixes = Array.from(
+      new Set(
+        (Array.isArray(inputs.image_generation_model_prefixes)
+          ? inputs.image_generation_model_prefixes
+          : Array.isArray(formValues.image_generation_model_prefixes)
+            ? formValues.image_generation_model_prefixes
+            : []
+        )
+          .map((item) => String(item || '').trim())
+          .filter(Boolean),
+      ),
+    );
 
     if (localInputs.type === 57) {
       if (batch) {
@@ -1792,6 +1812,8 @@ const EditChannelModal = (props) => {
       pass_through_body_enabled: localInputs.pass_through_body_enabled || false,
       system_prompt: localInputs.system_prompt || '',
       system_prompt_override: localInputs.system_prompt_override || false,
+      image_generation_model_prefixes:
+        localInputs.image_generation_model_prefixes || [],
     };
     localInputs.setting = JSON.stringify(channelExtraSettings);
 
@@ -1899,6 +1921,7 @@ const EditChannelModal = (props) => {
     delete localInputs.pass_through_body_enabled;
     delete localInputs.system_prompt;
     delete localInputs.system_prompt_override;
+    delete localInputs.image_generation_model_prefixes;
     delete localInputs.is_enterprise_account;
     // 顶层的 vertex_key_type 不应发送给后端
     delete localInputs.vertex_key_type;

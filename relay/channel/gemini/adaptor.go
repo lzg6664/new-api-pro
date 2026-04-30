@@ -74,29 +74,81 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 	return nil, errors.New("not implemented")
 }
 
+func geminiAspectRatioFromImageRequest(request dto.ImageRequest) string {
+	if raw, ok := request.Extra["aspect_ratio"]; ok {
+		var aspectRatio string
+		if err := common.Unmarshal(raw, &aspectRatio); err == nil && strings.TrimSpace(aspectRatio) != "" {
+			return strings.TrimSpace(aspectRatio)
+		}
+	}
+
+	size := strings.TrimSpace(request.Size)
+	if size == "" {
+		return ""
+	}
+	if strings.Contains(size, ":") {
+		return size
+	}
+
+	switch size {
+	case "256x256", "512x512", "1024x1024":
+		return "1:1"
+	case "1536x1024":
+		return "3:2"
+	case "1024x1536":
+		return "2:3"
+	case "1024x1792":
+		return "9:16"
+	case "1792x1024":
+		return "16:9"
+	}
+
+	return ""
+}
+
+func geminiImageSizeFromImageRequest(request dto.ImageRequest) string {
+	if raw, ok := request.Extra["image_size"]; ok {
+		var imageSize string
+		if err := common.Unmarshal(raw, &imageSize); err == nil && strings.TrimSpace(imageSize) != "" {
+			return strings.TrimSpace(imageSize)
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(request.Quality)) {
+	case "", "standard", "medium", "low", "auto", "1k":
+		if strings.TrimSpace(request.Quality) == "" {
+			return ""
+		}
+		return "1K"
+	case "hd", "high", "2k":
+		return "2K"
+	case "4k":
+		return "4K"
+	default:
+		return "1K"
+	}
+}
+
+func buildGeminiChatImageConfig(request dto.ImageRequest) ([]byte, error) {
+	imageConfig := make(map[string]any, 2)
+	if aspectRatio := geminiAspectRatioFromImageRequest(request); aspectRatio != "" {
+		imageConfig["aspectRatio"] = aspectRatio
+	}
+	if imageSize := geminiImageSizeFromImageRequest(request); imageSize != "" {
+		imageConfig["imageSize"] = imageSize
+	}
+	if len(imageConfig) == 0 {
+		return nil, nil
+	}
+	return common.Marshal(imageConfig)
+}
+
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
 	// For Imagen models: use the old predict/instances format
 	if strings.HasPrefix(info.UpstreamModelName, "imagen") {
-		// convert size to aspect ratio but allow user to specify aspect ratio
-		aspectRatio := "1:1" // default aspect ratio
-		size := strings.TrimSpace(request.Size)
-		if size != "" {
-			if strings.Contains(size, ":") {
-				aspectRatio = size
-			} else {
-				switch size {
-				case "256x256", "512x512", "1024x1024":
-					aspectRatio = "1:1"
-				case "1536x1024":
-					aspectRatio = "3:2"
-				case "1024x1536":
-					aspectRatio = "2:3"
-				case "1024x1792":
-					aspectRatio = "9:16"
-				case "1792x1024":
-					aspectRatio = "16:9"
-				}
-			}
+		aspectRatio := geminiAspectRatioFromImageRequest(request)
+		if aspectRatio == "" {
+			aspectRatio = "1:1"
 		}
 
 		// build gemini imagen request
@@ -113,19 +165,7 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 			},
 		}
 
-		// Set imageSize when quality parameter is specified
-		if request.Quality != "" {
-			imageSize := "1K" // default
-			switch request.Quality {
-			case "hd", "high":
-				imageSize = "2K"
-			case "2K":
-				imageSize = "2K"
-			case "standard", "medium", "low", "auto", "1K":
-				imageSize = "1K"
-			default:
-				imageSize = "1K"
-			}
+		if imageSize := geminiImageSizeFromImageRequest(request); imageSize != "" {
 			geminiRequest.Parameters.ImageSize = imageSize
 		}
 
@@ -178,6 +218,16 @@ func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInf
 		GenerationConfig: dto.GeminiChatGenerationConfig{
 			ResponseModalities: []string{"IMAGE"},
 		},
+	}
+	if imageN := int(lo.FromPtrOr(request.N, uint(1))); imageN > 0 {
+		geminiRequest.GenerationConfig.CandidateCount = &imageN
+	}
+	imageConfig, err := buildGeminiChatImageConfig(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build gemini image config: %w", err)
+	}
+	if len(imageConfig) > 0 {
+		geminiRequest.GenerationConfig.ImageConfig = imageConfig
 	}
 
 	return geminiRequest, nil
