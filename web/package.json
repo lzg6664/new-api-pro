@@ -92,5 +92,5 @@
     "singleQuote": true,
     "jsxSingleQuote": true
   },
-  "proxy": "http://localhost:3002"
+  "proxy": "http://localhost:3000"
 }
