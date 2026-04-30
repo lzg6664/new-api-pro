@@ -18,6 +18,9 @@ var group2model2channels map[string]map[string][]int // enabled channel
 var channelsIDM map[int]*Channel                     // all channels include disabled
 var channelSyncLock sync.RWMutex
 
+var group2model2pollingIndex map[string]map[string]int
+var pollingIndexLock sync.Mutex
+
 func InitChannelCache() {
 	if !common.MemoryCacheEnabled {
 		return
@@ -82,6 +85,14 @@ func InitChannelCache() {
 	}
 	channelsIDM = newChannelId2channel
 	channelSyncLock.Unlock()
+
+	// Initialize polling index maps for channel-level round-robin
+	pollingIndexLock.Lock()
+	if group2model2pollingIndex == nil {
+		group2model2pollingIndex = make(map[string]map[string]int)
+	}
+	pollingIndexLock.Unlock()
+
 	common.SysLog("channels synced from database")
 }
 
@@ -142,21 +153,63 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	targetPriority := int64(sortedUniquePriorities[retry])
 
 	// get the priority for the given retry number
-	var sumWeight = 0
-	var targetChannels []*Channel
+	var pollingChannels []*Channel
+	var weightChannels []*Channel
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
 			if channel.GetPriority() == targetPriority {
-				sumWeight += channel.GetWeight()
-				targetChannels = append(targetChannels, channel)
+				if channel.GetSelectionMode() == constant.ChannelSelectionModePolling {
+					pollingChannels = append(pollingChannels, channel)
+				} else {
+					weightChannels = append(weightChannels, channel)
+				}
 			}
 		} else {
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
 		}
 	}
 
-	if len(targetChannels) == 0 {
+	// Try round-robin among polling channels first
+	if len(pollingChannels) > 0 {
+		pollingIndexLock.Lock()
+		if group2model2pollingIndex == nil {
+			group2model2pollingIndex = make(map[string]map[string]int)
+		}
+		if group2model2pollingIndex[group] == nil {
+			group2model2pollingIndex[group] = make(map[string]int)
+		}
+		idx := group2model2pollingIndex[group][model]
+		if idx >= len(pollingChannels) {
+			idx = 0
+		}
+		// Iterate from current index, wrapping around, find the first enabled channel
+		for attempt := 0; attempt < len(pollingChannels); attempt++ {
+			ch := pollingChannels[idx]
+			idx = (idx + 1) % len(pollingChannels)
+			if _, ok := channelsIDM[ch.Id]; ok {
+				group2model2pollingIndex[group][model] = idx
+				pollingIndexLock.Unlock()
+				return ch, nil
+			}
+		}
+		pollingIndexLock.Unlock()
+		// all polling channels exhausted, fall through to weighted channels
+	}
+
+	if len(weightChannels) == 0 && len(pollingChannels) == 0 {
 		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
+	}
+
+	// Fall through to weighted random for weight channels (or all channels if no polling)
+	targetChannels := weightChannels
+	if len(targetChannels) == 0 {
+		// Only polling channels exist and all were exhausted, or no weight channels
+		return nil, errors.New(fmt.Sprintf("no weighted channel found for round-robin fallback, group: %s, model: %s, priority: %d", group, model, targetPriority))
+	}
+
+	var sumWeight = 0
+	for _, channel := range targetChannels {
+		sumWeight += channel.GetWeight()
 	}
 
 	// smoothing factor and adjustment

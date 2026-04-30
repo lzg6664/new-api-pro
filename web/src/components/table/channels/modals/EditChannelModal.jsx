@@ -210,6 +210,7 @@ const EditChannelModal = (props) => {
     weight: 0,
     tag: '',
     multi_key_mode: 'random',
+    selection_mode: 'weighted_random',
     // 渠道额外设置的默认值
     force_format: false,
     thinking_to_content: false,
@@ -882,6 +883,8 @@ const EditChannelModal = (props) => {
         setBatch(false);
         setMultiToSingle(false);
       }
+      const selectionMode = chInfo.selection_mode || 'weighted_random';
+      data.selection_mode = selectionMode;
       // 解析渠道额外设置并合并到data中
       if (data.setting) {
         try {
@@ -1962,6 +1965,7 @@ const EditChannelModal = (props) => {
       res = await API.post(`/api/channel/`, {
         mode: mode,
         multi_key_mode: mode === 'multi_to_single' ? multiKeyMode : undefined,
+        selection_mode: localInputs.selection_mode || 'weighted_random',
         channel: localInputs,
       });
     }
@@ -2612,7 +2616,26 @@ const EditChannelModal = (props) => {
                     showClear
                     onChange={(value) => handleInputChange('remark', value)}
                   />
-
+                  <Form.Select
+                    field='selection_mode'
+                    label={t('渠道选择模式')}
+                    placeholder={t('请选择渠道选择模式')}
+                    optionList={[
+                      { label: t('加权随机'), value: 'weighted_random' },
+                      { label: t('轮询'), value: 'polling' },
+                    ]}
+                    value={inputs.selection_mode || 'weighted_random'}
+                    onChange={(value) => handleInputChange('selection_mode', value)}
+                  />
+                  {inputs.selection_mode === 'polling' && (
+                    <Banner
+                      type='warning'
+                      description={t(
+                        '轮询模式：相同优先级的渠道将按顺序轮流分配请求。必须搭配Redis和内存缓存功能使用',
+                      )}
+                      className='!rounded-lg mt-2'
+                    />
+                  )}
                   <Row gutter={12}>
                     <Col span={12}>
                       <Form.InputNumber
@@ -2622,7 +2645,7 @@ const EditChannelModal = (props) => {
                         min={0}
                         onNumberChange={(value) => handleInputChange('priority', value)}
                         style={{ width: '100%' }}
-                      />
+                        />
                     </Col>
                     <Col span={12}>
                       <Form.InputNumber

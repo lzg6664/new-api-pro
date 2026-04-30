@@ -65,7 +65,8 @@ type ChannelInfo struct {
 	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	MultiKeyMode           constant.MultiKeyMode           `json:"multi_key_mode"`
+	SelectionMode          constant.ChannelSelectionMode `json:"selection_mode"`
 }
 
 // Value implements driver.Valuer interface
@@ -419,6 +420,13 @@ func (channel *Channel) GetWeight() int {
 		return 0
 	}
 	return int(*channel.Weight)
+}
+
+func (channel *Channel) GetSelectionMode() constant.ChannelSelectionMode {
+	if channel.ChannelInfo.SelectionMode == "" {
+		return constant.ChannelSelectionModeWeightedRandom
+	}
+	return channel.ChannelInfo.SelectionMode
 }
 
 func (channel *Channel) GetBaseURL() string {

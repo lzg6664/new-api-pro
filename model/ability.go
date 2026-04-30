@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -119,26 +120,77 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 	if err != nil {
 		return nil, err
 	}
-	channel := Channel{}
-	if len(abilities) > 0 {
-		// Randomly choose one
-		weightSum := uint(0)
-		for _, ability_ := range abilities {
-			weightSum += ability_.Weight + 10
-		}
-		// Randomly choose one
-		weight := common.GetRandomInt(int(weightSum))
-		for _, ability_ := range abilities {
-			weight -= int(ability_.Weight) + 10
-			//log.Printf("weight: %d, ability weight: %d", weight, *ability_.Weight)
-			if weight <= 0 {
-				channel.Id = ability_.ChannelId
-				break
-			}
-		}
-	} else {
+
+	if len(abilities) == 0 {
 		return nil, nil
 	}
+
+	// Load channels for each ability to determine selection mode
+	var pollingChannels []*Channel
+	var weightAbilities []Ability
+	for _, ability_ := range abilities {
+		ch := Channel{}
+		err = DB.First(&ch, "id = ?", ability_.ChannelId).Error
+		if err != nil {
+			continue // skip if channel not found
+		}
+		if ch.GetSelectionMode() == constant.ChannelSelectionModePolling {
+			pollingChannels = append(pollingChannels, &ch)
+		} else {
+			weightAbilities = append(weightAbilities, ability_)
+		}
+	}
+
+	// Try round-robin among polling channels first
+	if len(pollingChannels) > 0 {
+		pollingIndexLock.Lock()
+		if group2model2pollingIndex == nil {
+			group2model2pollingIndex = make(map[string]map[string]int)
+		}
+		if group2model2pollingIndex[group] == nil {
+			group2model2pollingIndex[group] = make(map[string]int)
+		}
+		idx := group2model2pollingIndex[group][model]
+		if idx >= len(pollingChannels) {
+			idx = 0
+		}
+		// Iterate from current index, wrapping around
+		for attempt := 0; attempt < len(pollingChannels); attempt++ {
+			ch := pollingChannels[idx]
+			idx = (idx + 1) % len(pollingChannels)
+			group2model2pollingIndex[group][model] = idx
+			pollingIndexLock.Unlock()
+			return ch, nil
+		}
+		pollingIndexLock.Unlock()
+		// all polling channels exhausted, fall through to weighted channels
+	}
+
+	// Fall through to weighted random for weight channels
+	if len(weightAbilities) == 0 {
+		return nil, nil
+	}
+
+	// Randomly choose one from weight abilities
+	weightSum := uint(0)
+	for _, ability_ := range weightAbilities {
+		weightSum += ability_.Weight + 10
+	}
+	// Randomly choose one
+	weight := common.GetRandomInt(int(weightSum))
+	for _, ability_ := range weightAbilities {
+		weight -= int(ability_.Weight) + 10
+		if weight <= 0 {
+			channel := Channel{}
+			channel.Id = ability_.ChannelId
+			err = DB.First(&channel, "id = ?", channel.Id).Error
+			return &channel, err
+		}
+	}
+
+	// fallback: use first weighted ability
+	channel := Channel{}
+	channel.Id = weightAbilities[0].ChannelId
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
 }

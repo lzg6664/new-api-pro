@@ -525,10 +525,11 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 }
 
 type AddChannelRequest struct {
-	Mode                      string                `json:"mode"`
-	MultiKeyMode              constant.MultiKeyMode `json:"multi_key_mode"`
-	BatchAddSetKeyPrefix2Name bool                  `json:"batch_add_set_key_prefix_2_name"`
-	Channel                   *model.Channel        `json:"channel"`
+	Mode                      string                         `json:"mode"`
+	MultiKeyMode              constant.MultiKeyMode          `json:"multi_key_mode"`
+	SelectionMode             constant.ChannelSelectionMode  `json:"selection_mode"`
+	BatchAddSetKeyPrefix2Name bool                           `json:"batch_add_set_key_prefix_2_name"`
+	Channel                   *model.Channel                 `json:"channel"`
 }
 
 func getVertexArrayKeys(keys string) ([]string, error) {
@@ -581,6 +582,7 @@ func AddChannel(c *gin.Context) {
 	}
 
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+	addChannelRequest.Channel.ChannelInfo.SelectionMode = addChannelRequest.SelectionMode
 	keys := make([]string, 0)
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
@@ -835,8 +837,9 @@ func DeleteChannelBatch(c *gin.Context) {
 
 type PatchChannel struct {
 	model.Channel
-	MultiKeyMode *string `json:"multi_key_mode"`
-	KeyMode      *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	MultiKeyMode  *string `json:"multi_key_mode"`
+	SelectionMode *string `json:"selection_mode"`
+	KeyMode       *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
 }
 
 func UpdateChannel(c *gin.Context) {
@@ -871,6 +874,11 @@ func UpdateChannel(c *gin.Context) {
 	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
 	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {
 		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
+	}
+
+	// If the request explicitly specifies a new SelectionMode, apply it on top of the original info.
+	if channel.SelectionMode != nil && *channel.SelectionMode != "" {
+		channel.ChannelInfo.SelectionMode = constant.ChannelSelectionMode(*channel.SelectionMode)
 	}
 
 	// 处理多key模式下的密钥追加/覆盖逻辑
