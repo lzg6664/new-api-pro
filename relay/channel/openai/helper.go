@@ -198,6 +198,16 @@ func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStream
 	responseId string, createAt int64, model string, systemFingerprint string,
 	usage *dto.Usage, containStreamUsage bool) {
 
+	if relaycommon.HasResponseOverride(info) {
+		if info.ShouldIncludeUsage && !containStreamUsage {
+			response := helper.GenerateFinalUsageResponse(responseId, createAt, model, *usage)
+			response.SetSystemFingerprint(systemFingerprint)
+			helper.ObjectData(c, response)
+		}
+		helper.Done(c)
+		return
+	}
+
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
 		if info.ShouldIncludeUsage && !containStreamUsage {

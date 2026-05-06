@@ -128,9 +128,17 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
-			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
-				common.SysLog("error handling stream format: " + err.Error())
-				sr.Error(err)
+			if !relaycommon.HasResponseOverride(info) {
+				if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
+					common.SysLog("error handling stream format: " + err.Error())
+					sr.Error(err)
+				}
+			} else {
+				// When response override is active, skip format conversion, send raw chunk
+				if err := sendStreamData(c, info, lastStreamData, false, false); err != nil {
+					common.SysLog("error sending stream data: " + err.Error())
+					sr.Error(err)
+				}
 			}
 		}
 		if len(data) > 0 {
@@ -169,9 +177,15 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		logger.LogError(c, fmt.Sprintf("error handling last response: %s, lastStreamData: [%s]", err.Error(), lastStreamData))
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
+	if !relaycommon.HasResponseOverride(info) {
+		if info.RelayFormat == types.RelayFormatOpenAI {
+			if shouldSendLastResp {
+				_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			}
+		}
+	} else {
 		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+			_ = sendStreamData(c, info, lastStreamData, false, false)
 		}
 	}
 
@@ -203,6 +217,14 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if common.DebugEnabled {
 		println("upstream response body:", string(responseBody))
 	}
+	// Apply response override before any format conversion
+	if relaycommon.HasResponseOverride(info) {
+		responseBody, err = relaycommon.ApplyResponseOverrideWithRelayInfo(responseBody, info)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
+
 	// Unmarshal to simpleResponse
 	if info.ChannelType == constant.ChannelTypeOpenRouter && info.ChannelOtherSettings.IsOpenRouterEnterprise() {
 		// 尝试解析为 openrouter enterprise
@@ -259,8 +281,43 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
 
-	switch info.RelayFormat {
-	case types.RelayFormatOpenAI:
+	if !relaycommon.HasResponseOverride(info) {
+		switch info.RelayFormat {
+		case types.RelayFormatOpenAI:
+			if usageModified {
+				var bodyMap map[string]interface{}
+				err = common.Unmarshal(responseBody, &bodyMap)
+				if err != nil {
+					return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+				}
+				bodyMap["usage"] = simpleResponse.Usage
+				responseBody, _ = common.Marshal(bodyMap)
+			}
+			if forceFormat {
+				responseBody, err = common.Marshal(simpleResponse)
+				if err != nil {
+					return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+				}
+			} else {
+				break
+			}
+		case types.RelayFormatClaude:
+			claudeResp := service.ResponseOpenAI2Claude(&simpleResponse, info)
+			claudeRespStr, err := common.Marshal(claudeResp)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+			responseBody = claudeRespStr
+		case types.RelayFormatGemini:
+			geminiResp := service.ResponseOpenAI2Gemini(&simpleResponse, info)
+			geminiRespStr, err := common.Marshal(geminiResp)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+			responseBody = geminiRespStr
+		}
+	} else {
+		// When response override is active, ensure usage from simpleResponse is in the final body
 		if usageModified {
 			var bodyMap map[string]interface{}
 			err = common.Unmarshal(responseBody, &bodyMap)
@@ -270,28 +327,6 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			bodyMap["usage"] = simpleResponse.Usage
 			responseBody, _ = common.Marshal(bodyMap)
 		}
-		if forceFormat {
-			responseBody, err = common.Marshal(simpleResponse)
-			if err != nil {
-				return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
-			}
-		} else {
-			break
-		}
-	case types.RelayFormatClaude:
-		claudeResp := service.ResponseOpenAI2Claude(&simpleResponse, info)
-		claudeRespStr, err := common.Marshal(claudeResp)
-		if err != nil {
-			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
-		}
-		responseBody = claudeRespStr
-	case types.RelayFormatGemini:
-		geminiResp := service.ResponseOpenAI2Gemini(&simpleResponse, info)
-		geminiRespStr, err := common.Marshal(geminiResp)
-		if err != nil {
-			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
-		}
-		responseBody = geminiRespStr
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -565,19 +600,30 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
 
+	// Apply response override before auto-store (e.g., strip model/usage from third-party proxies)
+	if relaycommon.HasResponseOverride(info) {
+		responseBody, err = relaycommon.ApplyResponseOverrideWithRelayInfo(responseBody, info)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
+
+	// Extract usage from the response body (best-effort, ignore parse errors)
 	var usageResp dto.SimpleResponse
-	err = common.Unmarshal(responseBody, &usageResp)
+	_ = common.Unmarshal(responseBody, &usageResp)
+
+	// Parse as ImageResponse and write through auto-store pipeline (COS upload/proxy)
+	var imageResp dto.ImageResponse
+	err = common.Unmarshal(responseBody, &imageResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
+	if newAPIError := relaycommon.WriteImageResponse(c, info, resp.StatusCode, &imageResp); newAPIError != nil {
+		return nil, newAPIError
+	}
 
-	// Once we've written to the client, we should not return errors anymore
-	// because the upstream has already consumed resources and returned content
-	// We should still perform billing even if parsing fails
-	// format
+	// Extract usage for billing
 	if usageResp.InputTokens > 0 {
 		usageResp.PromptTokens += usageResp.InputTokens
 	}

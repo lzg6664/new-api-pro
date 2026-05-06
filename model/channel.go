@@ -48,6 +48,7 @@ type Channel struct {
 	Setting           *string `json:"setting" gorm:"type:text"` // 渠道额外设置
 	ParamOverride     *string `json:"param_override" gorm:"type:text"`
 	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
+	ResponseOverride  *string `json:"response_override" gorm:"type:text"`
 	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
@@ -59,13 +60,13 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize           int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList     map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode           `json:"multi_key_mode"`
+	IsMultiKey             bool                          `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize           int                           `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList     map[int]int                   `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason map[int]string                `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime   map[int]int64                 `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex   int                           `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
+	MultiKeyMode           constant.MultiKeyMode         `json:"multi_key_mode"`
 	SelectionMode          constant.ChannelSelectionMode `json:"selection_mode"`
 }
 
@@ -706,7 +707,7 @@ func DisableChannelByTag(tag string) error {
 	return err
 }
 
-func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string) error {
+func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *string, group *string, priority *int64, weight *uint, paramOverride *string, headerOverride *string, responseOverride *string) error {
 	updateData := Channel{}
 	shouldReCreateAbilities := false
 	updatedTag := tag
@@ -737,6 +738,9 @@ func EditChannelByTag(tag string, newTag *string, modelMapping *string, models *
 	}
 	if headerOverride != nil {
 		updateData.HeaderOverride = headerOverride
+	}
+	if responseOverride != nil {
+		updateData.ResponseOverride = responseOverride
 	}
 
 	err := DB.Model(&Channel{}).Where("tag = ?", tag).Updates(updateData).Error
@@ -934,6 +938,17 @@ func (channel *Channel) GetHeaderOverride() map[string]interface{} {
 		}
 	}
 	return headerOverride
+}
+
+func (channel *Channel) GetResponseOverride() map[string]interface{} {
+	responseOverride := make(map[string]interface{})
+	if channel.ResponseOverride != nil && *channel.ResponseOverride != "" {
+		err := common.Unmarshal([]byte(*channel.ResponseOverride), &responseOverride)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("failed to unmarshal response override: channel_id=%d, error=%v", channel.Id, err))
+		}
+	}
+	return responseOverride
 }
 
 func GetChannelsByIds(ids []int) ([]*Channel, error) {

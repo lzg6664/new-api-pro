@@ -797,7 +797,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	if claudeResponse.Delta != nil && claudeResponse.Delta.StopReason != nil {
 		maybeMarkClaudeRefusal(c, *claudeResponse.Delta.StopReason)
 	}
-	if info.RelayFormat == types.RelayFormatClaude {
+	if relaycommon.HasResponseOverride(info) {
+		// Skip format conversion, send raw chunk when response override is active
+		helper.ClaudeChunkData(c, claudeResponse, data)
+	} else if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
 
 		if claudeResponse.Type == "message_start" {
@@ -829,6 +832,10 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 }
 
 func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	if relaycommon.HasResponseOverride(info) {
+		helper.Done(c)
+		return
+	}
 	if claudeInfo.Usage.PromptTokens == 0 {
 		//上游出错
 	}
@@ -913,16 +920,21 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
 	}
 	var responseData []byte
-	switch info.RelayFormat {
-	case types.RelayFormatOpenAI:
-		openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
-		openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
-		responseData, err = json.Marshal(openaiResponse)
-		if err != nil {
-			return types.NewError(err, types.ErrorCodeBadResponseBody)
-		}
-	case types.RelayFormatClaude:
+	if relaycommon.HasResponseOverride(info) {
+		// Skip format conversion, send override-modified response directly
 		responseData = data
+	} else {
+		switch info.RelayFormat {
+		case types.RelayFormatOpenAI:
+			openaiResponse := ResponseClaude2OpenAI(&claudeResponse)
+			openaiResponse.Usage = buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+			responseData, err = json.Marshal(openaiResponse)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeBadResponseBody)
+			}
+		case types.RelayFormatClaude:
+			responseData = data
+		}
 	}
 
 	if claudeResponse.Usage != nil && claudeResponse.Usage.ServerToolUse != nil && claudeResponse.Usage.ServerToolUse.WebSearchRequests > 0 {
@@ -949,6 +961,13 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	}
 	if common.DebugEnabled {
 		println("responseBody: ", string(responseBody))
+	}
+	// Apply response override before any format conversion
+	if relaycommon.HasResponseOverride(info) {
+		responseBody, err = relaycommon.ApplyResponseOverrideWithRelayInfo(responseBody, info)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
 	}
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)
 	if handleErr != nil {

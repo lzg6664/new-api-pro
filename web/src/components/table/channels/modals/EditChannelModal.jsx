@@ -200,6 +200,7 @@ const EditChannelModal = (props) => {
     other: '',
     model_mapping: '',
     param_override: '',
+    response_override: '',
     rest_routes: '',
     status_code_mapping: '',
     models: [],
@@ -403,12 +404,71 @@ const EditChannelModal = (props) => {
       };
     }
   }, [inputs.param_override, t]);
+
+  const responseOverrideMeta = useMemo(() => {
+    const raw =
+      typeof inputs.response_override === 'string'
+        ? inputs.response_override.trim()
+        : '';
+    if (!raw) {
+      return {
+        tagLabel: t('未设置'),
+        tagColor: 'grey',
+        preview: '',
+      };
+    }
+    if (!verifyJSON(raw)) {
+      return {
+        tagLabel: t('JSON格式错误'),
+        tagColor: 'red',
+        preview: raw,
+      };
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      const pretty = JSON.stringify(parsed, null, 2);
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        Array.isArray(parsed.operations)
+      ) {
+        return {
+          tagLabel: `${t('新格式模板')} (${parsed.operations.length})`,
+          tagColor: 'green',
+          preview: pretty,
+        };
+      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return {
+          tagLabel: `${t('旧格式模板')} (${Object.keys(parsed).length})`,
+          tagColor: 'blue',
+          preview: pretty,
+        };
+      }
+      return {
+        tagLabel: t('自定义 JSON'),
+        tagColor: 'orange',
+        preview: pretty,
+      };
+    } catch (error) {
+      return {
+        tagLabel: t('JSON格式错误'),
+        tagColor: 'red',
+        preview: raw,
+      };
+    }
+  }, [inputs.response_override, t]);
+
   const [isIonetChannel, setIsIonetChannel] = useState(false);
   const [ionetMetadata, setIonetMetadata] = useState(null);
   const [codexOAuthModalVisible, setCodexOAuthModalVisible] = useState(false);
   const [codexCredentialRefreshing, setCodexCredentialRefreshing] =
     useState(false);
   const [paramOverrideEditorVisible, setParamOverrideEditorVisible] =
+    useState(false);
+
+  const [responseOverrideEditorVisible, setResponseOverrideEditorVisible] =
     useState(false);
 
   // 密钥显示状态
@@ -845,6 +905,105 @@ const EditChannelModal = (props) => {
     handleInputChange('param_override', '');
   };
 
+  // ---- response override helpers ----
+  const copyResponseOverrideJson = async () => {
+    const raw =
+      typeof inputs.response_override === 'string'
+        ? inputs.response_override.trim()
+        : '';
+    if (!raw) {
+      showInfo(t('暂无可复制 JSON'));
+      return;
+    }
+
+    let content = raw;
+    if (verifyJSON(raw)) {
+      try {
+        content = JSON.stringify(JSON.parse(raw), null, 2);
+      } catch (error) {
+        content = raw;
+      }
+    }
+
+    const ok = await copy(content);
+    if (ok) {
+      showSuccess(t('响应转化器 JSON 已复制'));
+    } else {
+      showError(t('复制失败'));
+    }
+  };
+
+  const parseResponseOverrideInput = () => {
+    const raw =
+      typeof inputs.response_override === 'string'
+        ? inputs.response_override.trim()
+        : '';
+    if (!raw) return null;
+    if (!verifyJSON(raw)) {
+      throw new Error(t('当前响应转化器不是合法的 JSON'));
+    }
+    return JSON.parse(raw);
+  };
+
+  const applyResponseOverrideTemplate = (
+    templateType = 'operations',
+    applyMode = 'fill',
+  ) => {
+    try {
+      const parsedCurrent = parseResponseOverrideInput();
+      if (templateType === 'legacy') {
+        if (applyMode === 'fill') {
+          handleInputChange(
+            'response_override',
+            JSON.stringify(PARAM_OVERRIDE_LEGACY_TEMPLATE, null, 2),
+          );
+          return;
+        }
+        const currentLegacy =
+          parsedCurrent &&
+          typeof parsedCurrent === 'object' &&
+          !Array.isArray(parsedCurrent) &&
+          !Array.isArray(parsedCurrent.operations)
+            ? parsedCurrent
+            : {};
+        const merged = {
+          ...PARAM_OVERRIDE_LEGACY_TEMPLATE,
+          ...currentLegacy,
+        };
+        handleInputChange('response_override', JSON.stringify(merged, null, 2));
+        return;
+      }
+
+      if (applyMode === 'fill') {
+        handleInputChange(
+          'response_override',
+          JSON.stringify(PARAM_OVERRIDE_OPERATIONS_TEMPLATE, null, 2),
+        );
+        return;
+      }
+      const currentOperations =
+        parsedCurrent &&
+        typeof parsedCurrent === 'object' &&
+        !Array.isArray(parsedCurrent) &&
+        Array.isArray(parsedCurrent.operations)
+          ? parsedCurrent.operations
+          : [];
+      const merged = {
+        operations: [
+          ...currentOperations,
+          ...PARAM_OVERRIDE_OPERATIONS_TEMPLATE.operations,
+        ],
+      };
+      handleInputChange('response_override', JSON.stringify(merged, null, 2));
+    } catch (error) {
+      showError(error.message || t('模板应用失败'));
+    }
+  };
+
+  const clearResponseOverride = () => {
+    handleInputChange('response_override', '');
+  };
+
   const loadChannel = async () => {
     setLoading(true);
     let res = await API.get(`/api/channel/${channelId}`);
@@ -1068,6 +1227,7 @@ const EditChannelModal = (props) => {
         (data.rest_routes && data.rest_routes.trim()) ||
         (data.status_code_mapping && data.status_code_mapping.trim()) ||
         (data.header_override && data.header_override.trim()) ||
+        (data.response_override && data.response_override.trim()) ||
         (data.tag && data.tag.trim()) ||
         (data.remark && data.remark.trim()) ||
         (data.priority && data.priority !== 0) ||
@@ -1587,6 +1747,7 @@ const EditChannelModal = (props) => {
     let localInputs = { ...formValues };
     localInputs.param_override = inputs.param_override;
     localInputs.header_override = inputs.header_override;
+    localInputs.response_override = inputs.response_override;
     localInputs.rest_routes = inputs.rest_routes;
     localInputs.force_format = inputs.force_format;
     localInputs.thinking_to_content = inputs.thinking_to_content;
@@ -2526,6 +2687,53 @@ const EditChannelModal = (props) => {
                     }
                     showClear
                   />
+
+                  {/* Response Converter Section */}
+                  <div className='mb-4'>
+                    <div className='flex items-center justify-between gap-2 mb-1'>
+                      <Text className='text-sm font-medium'>{t('响应转化器')}</Text>
+                      <Space>
+                        <Button
+                          size='small'
+                          type='primary'
+                          icon={<IconCode size={14} />}
+                          onClick={() => setResponseOverrideEditorVisible(true)}
+                        >
+                          {t('可视化编辑')}
+                        </Button>
+                        <Dropdown
+                          trigger='click'
+                          position='bottomRight'
+                          menu={[
+                            { node: 'item', name: t('填充新模板'), onClick: () => applyResponseOverrideTemplate('operations', 'fill') },
+                            { node: 'item', name: t('填充旧模板'), onClick: () => applyResponseOverrideTemplate('legacy', 'fill') },
+                            { node: 'item', name: t('清空'), onClick: clearResponseOverride },
+                          ]}
+                        >
+                          <Button size='small' type='tertiary'>
+                            {t('更多')} <IconChevronDown size={12} />
+                          </Button>
+                        </Dropdown>
+                      </Space>
+                    </div>
+                    <Text type='tertiary' size='small'>
+                      {t('此项可选，用于转化上游响应格式。开启后自动跳过格式转换，请自行处理响应格式的转化。仅对非流式请求生效。')}
+                    </Text>
+                    <div className='mt-2 rounded-xl p-3' style={{ backgroundColor: 'var(--semi-color-fill-0)', border: '1px solid var(--semi-color-fill-2)' }}>
+                      <div className='flex items-center justify-between mb-2'>
+                        <Tag color={responseOverrideMeta.tagColor}>
+                          {responseOverrideMeta.tagLabel}
+                        </Tag>
+                        <Button size='small' icon={<IconCopy />} type='tertiary' onClick={copyResponseOverrideJson}>
+                          {t('复制')}
+                        </Button>
+                      </div>
+                      <pre className='mb-0 text-xs leading-5 whitespace-pre-wrap break-all max-h-56 overflow-auto'>
+                        {responseOverrideMeta.preview || (inputs.response_override ? '' : t('未设置'))}
+                      </pre>
+                    </div>
+                  </div>
+
                   <JSONEditor
                     key={`status_code_mapping-${isEdit ? channelId : 'new'}`}
                     field='status_code_mapping'
@@ -4031,6 +4239,16 @@ const EditChannelModal = (props) => {
         onSave={(nextValue) => {
           handleInputChange('param_override', nextValue);
           setParamOverrideEditorVisible(false);
+        }}
+      />
+
+      <ParamOverrideEditorModal
+        visible={responseOverrideEditorVisible}
+        value={inputs.response_override || ''}
+        onCancel={() => setResponseOverrideEditorVisible(false)}
+        onSave={(nextValue) => {
+          handleInputChange('response_override', nextValue);
+          setResponseOverrideEditorVisible(false);
         }}
       />
 

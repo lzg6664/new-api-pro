@@ -2197,3 +2197,22 @@ func BuildParamOverrideContext(info *RelayInfo) map[string]interface{} {
 	ctx["is_channel_test"] = info.IsChannelTest
 	return ctx
 }
+
+// ApplyResponseOverrideWithRelayInfo applies the channel's response override rules
+// to the upstream response body bytes. Returns the modified bytes.
+// Reuses the same ApplyParamOverride engine.
+func ApplyResponseOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, error) {
+	if info == nil || info.ChannelMeta == nil || len(info.ChannelMeta.ResponseOverride) == 0 {
+		return jsonData, nil
+	}
+	overrideCtx := BuildParamOverrideContext(info)
+	return ApplyParamOverride(jsonData, info.ChannelMeta.ResponseOverride, overrideCtx)
+}
+
+// HasResponseOverride returns true if the channel has response override rules configured.
+func HasResponseOverride(info *RelayInfo) bool {
+	if info == nil || info.ChannelMeta == nil {
+		return false
+	}
+	return len(info.ChannelMeta.ResponseOverride) > 0
+}

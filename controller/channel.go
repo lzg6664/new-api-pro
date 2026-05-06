@@ -525,11 +525,11 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 }
 
 type AddChannelRequest struct {
-	Mode                      string                         `json:"mode"`
-	MultiKeyMode              constant.MultiKeyMode          `json:"multi_key_mode"`
-	SelectionMode             constant.ChannelSelectionMode  `json:"selection_mode"`
-	BatchAddSetKeyPrefix2Name bool                           `json:"batch_add_set_key_prefix_2_name"`
-	Channel                   *model.Channel                 `json:"channel"`
+	Mode                      string                        `json:"mode"`
+	MultiKeyMode              constant.MultiKeyMode         `json:"multi_key_mode"`
+	SelectionMode             constant.ChannelSelectionMode `json:"selection_mode"`
+	BatchAddSetKeyPrefix2Name bool                          `json:"batch_add_set_key_prefix_2_name"`
+	Channel                   *model.Channel                `json:"channel"`
 }
 
 func getVertexArrayKeys(keys string) ([]string, error) {
@@ -697,15 +697,16 @@ func DeleteDisabledChannel(c *gin.Context) {
 }
 
 type ChannelTag struct {
-	Tag            string  `json:"tag"`
-	NewTag         *string `json:"new_tag"`
-	Priority       *int64  `json:"priority"`
-	Weight         *uint   `json:"weight"`
-	ModelMapping   *string `json:"model_mapping"`
-	Models         *string `json:"models"`
-	Groups         *string `json:"groups"`
-	ParamOverride  *string `json:"param_override"`
-	HeaderOverride *string `json:"header_override"`
+	Tag              string  `json:"tag"`
+	NewTag           *string `json:"new_tag"`
+	Priority         *int64  `json:"priority"`
+	Weight           *uint   `json:"weight"`
+	ModelMapping     *string `json:"model_mapping"`
+	Models           *string `json:"models"`
+	Groups           *string `json:"groups"`
+	ParamOverride    *string `json:"param_override"`
+	HeaderOverride   *string `json:"header_override"`
+	ResponseOverride *string `json:"response_override"`
 }
 
 func DisableTagChannels(c *gin.Context) {
@@ -793,7 +794,18 @@ func EditTagChannels(c *gin.Context) {
 		}
 		channelTag.HeaderOverride = common.GetPointer[string](trimmed)
 	}
-	err = model.EditChannelByTag(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride)
+	if channelTag.ResponseOverride != nil {
+		trimmed := strings.TrimSpace(*channelTag.ResponseOverride)
+		if trimmed != "" && !json.Valid([]byte(trimmed)) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "响应覆盖必须是合法的 JSON 格式",
+			})
+			return
+		}
+		channelTag.ResponseOverride = common.GetPointer[string](trimmed)
+	}
+	err = model.EditChannelByTag(channelTag.Tag, channelTag.NewTag, channelTag.ModelMapping, channelTag.Models, channelTag.Groups, channelTag.Priority, channelTag.Weight, channelTag.ParamOverride, channelTag.HeaderOverride, channelTag.ResponseOverride)
 	if err != nil {
 		common.ApiError(c, err)
 		return
