@@ -205,6 +205,12 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		return newApiErr
 	}
 
+	// Async task handled by the adaptor (response already written, polling started).
+	// Skip normal billing — the controller-level pre-consume + settle handles it.
+	if info.AsyncTaskHandled {
+		return nil
+	}
+
 	var containAudioTokens = usage.(*dto.Usage).CompletionTokenDetails.AudioTokens > 0 || usage.(*dto.Usage).PromptTokensDetails.AudioTokens > 0
 	var containsAudioRatios = ratio_setting.ContainsAudioRatio(info.OriginModelName) || ratio_setting.ContainsAudioCompletionRatio(info.OriginModelName)
 

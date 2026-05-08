@@ -118,6 +118,11 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		return newAPIError
 	}
 
+	// Async task handled — skip image-specific billing
+	if info.AsyncTaskHandled {
+		return nil
+	}
+
 	imageN := uint(1)
 	if request.N != nil {
 		imageN = *request.N

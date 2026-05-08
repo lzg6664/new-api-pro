@@ -906,6 +906,9 @@ func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {
 			_ = channel.Save()           // 保存修改
 		}
 	}
+	if setting.AsyncTask != nil {
+		setting.AsyncTask.Defaults()
+	}
 	return setting
 }
 

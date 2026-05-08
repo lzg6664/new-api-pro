@@ -45,7 +45,7 @@ import {
   Row,
   Col,
   Highlight,
-  Input,
+  TextArea,
   Tooltip,
   Collapse,
   Dropdown,
@@ -85,6 +85,7 @@ import {
   IconBolt,
   IconSearch,
   IconChevronDown,
+  IconFile,
 } from '@douyinfe/semi-icons';
 
 const { Text, Title } = Typography;
@@ -604,8 +605,135 @@ const EditChannelModal = (props) => {
     system_prompt_override: false,
     image_generation_model_prefixes: [],
   });
+  // 异步任务配置空值（新建渠道时使用，默认值由后端 Defaults() 管理）
+  const emptyAsyncTaskConfig = {
+    enabled: false,
+    task_id_path: '',
+    status_path: '',
+    error_code_path: '',
+    error_msg_path: '',
+    success_statuses: [],
+    query_method: '',
+    query_path: '',
+    query_body: '',
+    status_map: '',
+    result_list_path: '',
+    result_url_path: '',
+    result_type_path: '',
+    output_type: '',
+    poll_interval_sec: undefined,
+    max_poll_attempts: undefined,
+  };
+  const readAsyncTaskConfigFromSettings = (rawSettings) => {
+    if (typeof rawSettings !== 'string' || rawSettings.trim() === '') {
+      return emptyAsyncTaskConfig;
+    }
+    try {
+      const parsedSettings = JSON.parse(rawSettings);
+      const at =
+        parsedSettings &&
+        typeof parsedSettings === 'object' &&
+        !Array.isArray(parsedSettings)
+          ? parsedSettings.async_task
+          : null;
+      if (!at || typeof at !== 'object' || Array.isArray(at)) {
+        return emptyAsyncTaskConfig;
+      }
+      return {
+        enabled: at.enabled === true,
+        task_id_path: at.task_id_path || '',
+        status_path: at.status_path || '',
+        error_code_path: at.error_code_path || '',
+        error_msg_path: at.error_msg_path || '',
+        success_statuses: Array.isArray(at.success_statuses)
+          ? at.success_statuses
+          : [],
+        query_method: at.query_method || '',
+        query_path: at.query_path || '',
+        query_body: at.query_body
+          ? JSON.stringify(at.query_body, null, 2)
+          : '',
+        status_map: at.status_map
+          ? Object.entries(at.status_map)
+              .map(([key, val]) => `${key}→${val}`)
+              .join('\n')
+          : '',
+        result_list_path: at.result_list_path || '',
+        result_url_path: at.result_url_path || '',
+        result_type_path: at.result_type_path || '',
+        output_type: at.output_type || '',
+        poll_interval_sec: at.poll_interval_sec || undefined,
+        max_poll_attempts: at.max_poll_attempts || undefined,
+      };
+    } catch (error) {
+      return emptyAsyncTaskConfig;
+    }
+  };
+  const asyncTaskConfig = useMemo(
+    () => readAsyncTaskConfigFromSettings(inputs.settings),
+    [inputs.settings],
+  );
+  const skipNextFormSyncRef = useRef(false);
+  const hasAsyncTaskConfigInSettings = useMemo(() => {
+    if (typeof inputs.settings !== 'string' || inputs.settings.trim() === '') {
+      return false;
+    }
+    try {
+      const parsedSettings = JSON.parse(inputs.settings);
+      return !!(
+        parsedSettings &&
+        typeof parsedSettings === 'object' &&
+        !Array.isArray(parsedSettings) &&
+        parsedSettings.async_task &&
+        typeof parsedSettings.async_task === 'object' &&
+        !Array.isArray(parsedSettings.async_task)
+      );
+    } catch (error) {
+      return false;
+    }
+  }, [inputs.settings]);
+  const shouldShowAsyncTaskConfig = true;
+    // inputs.type === 1 || hasAsyncTaskConfigInSettings;
+  // JSON 导入异步任务配置状态
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importJsonText, setImportJsonText] = useState('');
+  const [importPreview, setImportPreview] = useState(null);
+  const [importError, setImportError] = useState('');
   const showApiConfigCard = true; // 控制是否显示 API 配置卡片
+  const getAsyncTaskFormValues = (config = asyncTaskConfig) => ({
+    async_task_enabled: config.enabled,
+    async_task_task_id_path: config.task_id_path,
+    async_task_status_path: config.status_path,
+    async_task_error_code_path: config.error_code_path,
+    async_task_error_msg_path: config.error_msg_path,
+    async_task_success_statuses: config.success_statuses,
+    async_task_query_method: config.query_method,
+    async_task_query_path: config.query_path,
+    async_task_query_body: config.query_body,
+    async_task_status_map: config.status_map,
+    async_task_result_list_path: config.result_list_path,
+    async_task_result_url_path: config.result_url_path,
+    async_task_result_type_path: config.result_type_path,
+    async_task_output_type: config.output_type,
+    async_task_poll_interval_sec: config.poll_interval_sec,
+    async_task_max_poll_attempts: config.max_poll_attempts,
+  });
+
+  const syncAsyncTaskFormValues = (config = asyncTaskConfig) => {
+    if (!formApiRef.current) {
+      return;
+    }
+    const formValues = getAsyncTaskFormValues(config);
+    Object.entries(formValues).forEach(([field, value]) => {
+      formApiRef.current.setValue(field, value);
+    });
+  };
+
   const getInitValues = () => ({ ...originInputs });
+  const getInitFormValues = () => ({
+    ...originInputs,
+    ...getAsyncTaskFormValues(emptyAsyncTaskConfig),
+  });
 
   // 处理渠道额外设置的更新
   const handleChannelSettingsChange = (key, value) => {
@@ -650,6 +778,302 @@ const EditChannelModal = (props) => {
     settings[key] = value;
     const settingsJson = JSON.stringify(settings);
     handleInputChange('settings', settingsJson);
+  };
+
+  // 解析状态映射字符串为对象（"K→V\n..." → {K: V, ...}）
+  const parseStatusMapToObject = (str) => {
+    const obj = {};
+    if (!str) return obj;
+    str.split('\n').forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const sepIndex = trimmed.indexOf('→');
+      if (sepIndex > 0) {
+        const key = trimmed.substring(0, sepIndex).trim();
+        const val = trimmed.substring(sepIndex + 1).trim();
+        if (key) obj[key] = val;
+      }
+    });
+    return obj;
+  };
+
+  // 解析状态映射对象为字符串（{K: V, ...} → "K→V\n..."）
+  const parseStatusMapToString = (obj) => {
+    if (!obj || typeof obj !== 'object') return '';
+    return Object.entries(obj)
+      .map(([key, val]) => `${key}→${val}`)
+      .join('\n');
+  };
+
+  // 处理异步任务配置更新
+  const parseSettingsObject = (rawSettings) => {
+    if (typeof rawSettings !== 'string' || rawSettings.trim() === '') {
+      return {};
+    }
+    try {
+      const parsed = JSON.parse(rawSettings);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {};
+      }
+      return parsed;
+    } catch (error) {
+      return {};
+    }
+  };
+
+  const buildAsyncTaskStorageConfig = (config) => ({
+    ...config,
+    query_body: config.query_body
+      ? (() => {
+          try {
+            return JSON.parse(config.query_body);
+          } catch (e) {
+            return config.query_body;
+          }
+        })()
+      : '',
+    status_map: parseStatusMapToObject(config.status_map),
+  });
+
+  const updateAsyncTaskConfigState = (updater) => {
+    skipNextFormSyncRef.current = true;
+    setInputs((prevInputs) => {
+      const prevConfig = readAsyncTaskConfigFromSettings(prevInputs.settings);
+      const nextConfig =
+        typeof updater === 'function' ? updater(prevConfig) : updater;
+      if (!nextConfig) {
+        return prevInputs;
+      }
+      syncAsyncTaskFormValues(nextConfig);
+      const nextSettings = parseSettingsObject(prevInputs.settings);
+      nextSettings.async_task = buildAsyncTaskStorageConfig(nextConfig);
+      return {
+        ...prevInputs,
+        settings: JSON.stringify(nextSettings),
+      };
+    });
+  };
+
+  const handleAsyncTaskConfigChange = (key, value) => {
+    updateAsyncTaskConfigState((prevConfig) => ({
+      ...prevConfig,
+      [key]: value,
+    }));
+  };
+
+  // 从 JSON 示例自动分析异步任务配置
+  const analyzeAsyncTaskJson = (jsonStr) => {
+    let data;
+    try {
+      data = JSON.parse(jsonStr);
+    } catch (e) {
+      throw new Error('JSON 格式无效');
+    }
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+      throw new Error('需要 JSON 对象，不是数组');
+    }
+
+    // 递归收集所有路径及其值
+    const paths = {};
+    const visit = (obj, prefix) => {
+      if (typeof obj !== 'object' || obj === null) return;
+      for (const [key, value] of Object.entries(obj)) {
+        const path = prefix ? `${prefix}.${key}` : key;
+        paths[path] = value;
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          visit(value, path);
+        }
+      }
+    };
+    visit(data, '');
+
+    const result = {};
+
+    // 1. task_id_path：找第一个字符串类型的 id/task 字段
+    const idKeyPriority = ['id', 'task_id', 'taskId'];
+    let bestIdPath = '';
+    for (const [path, value] of Object.entries(paths)) {
+      if (typeof value === 'string') {
+        const key = path.split('.').pop();
+        const lkey = key.toLowerCase();
+        if (idKeyPriority.includes(lkey)) {
+          bestIdPath = path;
+          if (lkey === 'id' && !path.includes('.')) break;
+        } else if (lkey.endsWith('_id') && !bestIdPath) {
+          bestIdPath = path;
+        }
+      }
+    }
+    result.task_id_path = bestIdPath || 'taskId';
+
+    // 2. status_path：找 status/state 相关字段
+    const statusKeywords = ['status', 'state', 'task_status'];
+    let bestStatusPath = '';
+    for (const [path] of Object.entries(paths)) {
+      const key = path.split('.').pop().toLowerCase();
+      if (statusKeywords.includes(key)) {
+        bestStatusPath = path;
+        break;
+      }
+    }
+    result.status_path = bestStatusPath || 'status';
+
+    // 3. success_statuses：扫描实际数据中的状态值，收集非终态
+    const statusKey = result.status_path.split('.').pop();
+    const foundStatuses = new Set();
+    const scanStatuses = (obj) => {
+      if (typeof obj !== 'object' || obj === null) return;
+      for (const [key, value] of Object.entries(obj)) {
+        if (key === statusKey && typeof value === 'string') foundStatuses.add(value);
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) scanStatuses(value);
+      }
+    };
+    scanStatuses(data);
+    const terminalStatuses = ['completed', 'succeeded', 'success', 'failed'];
+    const nonTerminal = [...foundStatuses].filter(
+      (s) => !terminalStatuses.includes(s.toLowerCase()),
+    );
+    result.success_statuses = nonTerminal.length > 0 ? nonTerminal : ['RUNNING', 'QUEUED'];
+
+    // 4. error_code_path：找 error.code / error.error_code / error.type
+    const errorCodeCandidates = ['error.code', 'error.error_code', 'error.type'];
+    result.error_code_path = errorCodeCandidates.find((p) => p in paths) || '';
+
+    // 5. error_msg_path：找 error.message / error.error_message / error.msg
+    const errorMsgCandidates = ['error.message', 'error.error_message', 'error.msg'];
+    result.error_msg_path = errorMsgCandidates.find((p) => p in paths) || '';
+
+    // 6. result_list_path：找第一个包含 url 字段的对象数组
+    const findResultArray = (obj, prefix = '') => {
+      if (typeof obj !== 'object' || obj === null) return null;
+      for (const [key, value] of Object.entries(obj)) {
+        const path = prefix ? `${prefix}.${key}` : key;
+        if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+          if ('url' in value[0] || 'image_url' in value[0] || 'video_url' in value[0]) {
+            return path;
+          }
+        }
+        if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+          const found = findResultArray(value, path);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    result.result_list_path = findResultArray(data) || 'results';
+
+    // 7. result_url_path：从结果数组第一个元素中找 http URL 字段
+    let urlPath = '';
+    if (result.result_list_path) {
+      const parts = result.result_list_path.split('.');
+      let current = data;
+      for (const part of parts) {
+        if (current && typeof current === 'object' && part in current) {
+          current = current[part];
+        } else {
+          current = null;
+          break;
+        }
+      }
+      if (Array.isArray(current) && current.length > 0 && typeof current[0] === 'object') {
+        const first = current[0];
+        for (const urlKey of ['url', 'image_url', 'video_url', 'audio_url', 'result_url']) {
+          if (urlKey in first && typeof first[urlKey] === 'string' && first[urlKey].startsWith('http')) {
+            urlPath = urlKey;
+            break;
+          }
+        }
+        if (!urlPath) {
+          for (const [k, v] of Object.entries(first)) {
+            if (typeof v === 'string' && v.startsWith('http')) {
+              urlPath = k;
+              break;
+            }
+          }
+        }
+      }
+    }
+    result.result_url_path = urlPath || 'url';
+
+    // 8. result_type_path：找 outputType / output_type / result_type / media_type / type
+    const typeKeys = ['outputType', 'output_type', 'result_type', 'media_type', 'type'];
+    result.result_type_path = '';
+    for (const [path] of Object.entries(paths)) {
+      const key = path.split('.').pop();
+      if (typeKeys.includes(key)) {
+        result.result_type_path = path;
+        break;
+      }
+    }
+    result.result_type_path ||= 'outputType';
+
+    // 9. output_type
+    result.output_type = 'image';
+
+    // 10. status_map：根据实际出现的状态值生成映射
+    const lowerStatuses = [...foundStatuses].map((s) => s.toLowerCase());
+    const statusMap = {};
+    const findOriginal = (lower) => [...foundStatuses].find((s) => s.toLowerCase() === lower);
+    if (lowerStatuses.some((s) => s === 'queued' || s === 'pending')) {
+      const k = findOriginal(lowerStatuses.find((s) => s === 'queued' || s === 'pending'));
+      if (k) statusMap[k] = 'pending';
+    }
+    if (lowerStatuses.some((s) => s === 'running' || s === 'in_progress' || s === 'processing')) {
+      const k = findOriginal(lowerStatuses.find((s) => s === 'running' || s === 'in_progress' || s === 'processing'));
+      if (k) statusMap[k] = 'running';
+    }
+    if (lowerStatuses.some((s) => s === 'completed' || s === 'succeeded' || s === 'success')) {
+      const k = findOriginal(lowerStatuses.find((s) => s === 'completed' || s === 'succeeded' || s === 'success'));
+      if (k) statusMap[k] = 'succeeded';
+    }
+    if (lowerStatuses.some((s) => s === 'failed')) {
+      const k = findOriginal('failed');
+      if (k) statusMap[k] = 'failed';
+    }
+    if (Object.keys(statusMap).length === 0) {
+      statusMap['QUEUED'] = 'pending';
+      statusMap['RUNNING'] = 'running';
+      statusMap['SUCCESS'] = 'succeeded';
+      statusMap['FAILED'] = 'failed';
+    }
+    result.status_map = Object.entries(statusMap)
+      .map(([k, v]) => `${k}→${v}`)
+      .join('\n');
+
+    return result;
+  };
+
+  // JSON 导入：处理解析
+  const handleParseImportJson = () => {
+    setImportError('');
+    try {
+      const detected = analyzeAsyncTaskJson(importJsonText);
+      setImportPreview(detected);
+    } catch (e) {
+      setImportError(e.message);
+    }
+  };
+
+  // JSON 导入：确认填充
+  const handleApplyImportPreview = () => {
+    if (!importPreview) return;
+    updateAsyncTaskConfigState((prevConfig) => ({
+      ...prevConfig,
+      ...importPreview,
+    }));
+    setShowImportModal(false);
+    setImportJsonText('');
+    setImportPreview(null);
+    setImportError('');
+    showSuccess(t('已应用到表单，请点击保存渠道后写入数据库'));
+  };
+
+  // JSON 导入：关闭并重置
+  const handleCloseImportModal = () => {
+    setShowImportModal(false);
+    setImportJsonText('');
+    setImportPreview(null);
+    setImportError('');
   };
 
   const applyClipboardConfig = (config) => {
@@ -1044,6 +1468,8 @@ const EditChannelModal = (props) => {
       }
       const selectionMode = chInfo.selection_mode || 'weighted_random';
       data.selection_mode = selectionMode;
+      let hasAsyncTaskSettings = false;
+      let nextAsyncTaskConfig = readAsyncTaskConfigFromSettings(data.settings);
       // 解析渠道额外设置并合并到data中
       if (data.setting) {
         try {
@@ -1123,6 +1549,29 @@ const EditChannelModal = (props) => {
             parsedSettings.rest_routes.length > 0
               ? JSON.stringify(parsedSettings.rest_routes, null, 2)
               : '';
+          // 读取异步任务配置
+          if (parsedSettings.async_task && typeof parsedSettings.async_task === 'object') {
+            hasAsyncTaskSettings = true;
+            const at = parsedSettings.async_task;
+            nextAsyncTaskConfig = {
+              enabled: at.enabled === true,
+              task_id_path: at.task_id_path || 'taskId',
+              status_path: at.status_path || 'status',
+              error_code_path: at.error_code_path || '',
+              error_msg_path: at.error_msg_path || '',
+              success_statuses: Array.isArray(at.success_statuses) ? at.success_statuses : ['RUNNING', 'QUEUED'],
+              query_method: at.query_method || 'POST',
+              query_path: at.query_path || '',
+              query_body: at.query_body ? JSON.stringify(at.query_body, null, 2) : '{\n  "taskId": "${task_id}"\n}',
+              status_map: at.status_map ? parseStatusMapToString(at.status_map) : 'QUEUED→pending\nRUNNING→running\nSUCCESS→succeeded\nFAILED→failed',
+              result_list_path: at.result_list_path || 'results',
+              result_url_path: at.result_url_path || 'url',
+              result_type_path: at.result_type_path || 'outputType',
+              output_type: at.output_type || 'image',
+              poll_interval_sec: at.poll_interval_sec || 5,
+              max_poll_attempts: at.max_poll_attempts || 120,
+            };
+          }
         } catch (error) {
           console.error('解析其他设置失败:', error);
           data.azure_responses_version = '';
@@ -1143,6 +1592,7 @@ const EditChannelModal = (props) => {
           data.upstream_model_update_last_detected_models = [];
           data.upstream_model_update_ignored_models = '';
           data.rest_routes = '';
+          nextAsyncTaskConfig = emptyAsyncTaskConfig;
         }
       } else {
         // 兼容历史数据：老渠道没有 settings 时，默认按 json 展示
@@ -1162,6 +1612,7 @@ const EditChannelModal = (props) => {
         data.upstream_model_update_last_detected_models = [];
         data.upstream_model_update_ignored_models = '';
         data.rest_routes = '';
+        nextAsyncTaskConfig = defaultAsyncTaskConfig;
       }
 
       if (
@@ -1173,9 +1624,13 @@ const EditChannelModal = (props) => {
       }
 
       initialBaseUrlRef.current = data.base_url || '';
+      skipNextFormSyncRef.current = true;
       setInputs(data);
       if (formApiRef.current) {
-        formApiRef.current.setValues(data);
+        formApiRef.current.setValues({
+          ...data,
+          ...getAsyncTaskFormValues(nextAsyncTaskConfig),
+        });
       }
       if (data.auto_ban === 0) {
         setAutoBan(false);
@@ -1238,7 +1693,8 @@ const EditChannelModal = (props) => {
         data.pass_through_body_enabled ||
         data.force_format ||
         data.claude_beta_query ||
-        data.system_prompt_override;
+        data.system_prompt_override ||
+        hasAsyncTaskSettings;
       if (hasAdvancedValues) {
         setAdvancedSettingsOpen(true);
       }
@@ -1513,7 +1969,7 @@ const EditChannelModal = (props) => {
       initialBaseUrlRef.current = '';
       setInputs(originInputs);
       if (formApiRef.current) {
-        formApiRef.current.setValues(originInputs);
+        formApiRef.current.setValues(getInitFormValues());
       }
       let localModels = getChannelModels(inputs.type);
       setBasicModels(localModels);
@@ -1523,9 +1979,16 @@ const EditChannelModal = (props) => {
 
   useEffect(() => {
     if (formApiRef.current) {
-      formApiRef.current.setValues(inputs);
+      if (skipNextFormSyncRef.current) {
+        skipNextFormSyncRef.current = false;
+        return;
+      }
+      formApiRef.current.setValues({
+        ...inputs,
+        ...getAsyncTaskFormValues(asyncTaskConfig),
+      });
     }
-  }, [inputs]);
+  }, [asyncTaskConfig, inputs]);
 
   useEffect(() => {
     setModelSearchValue('');
@@ -1533,7 +1996,7 @@ const EditChannelModal = (props) => {
       if (isEdit) {
         loadChannel();
       } else {
-        formApiRef.current?.setValues(getInitValues());
+        formApiRef.current?.setValues(getInitFormValues());
         try {
           navigator?.clipboard?.readText()?.then((text) => {
             const parsed = parseChannelConnectionString(text);
@@ -1586,6 +2049,7 @@ const EditChannelModal = (props) => {
       system_prompt: '',
       system_prompt_override: false,
     });
+    // 重置异步任务配置
     // 重置密钥模式状态
     setKeyMode('append');
     // 重置企业账户状态
@@ -2076,6 +2540,34 @@ const EditChannelModal = (props) => {
       delete settings.rest_routes;
     }
 
+    // 异步任务配置
+    settings.async_task = {
+      enabled: asyncTaskConfig.enabled === true,
+      task_id_path: asyncTaskConfig.task_id_path || 'taskId',
+      status_path: asyncTaskConfig.status_path || 'status',
+      error_code_path: asyncTaskConfig.error_code_path || '',
+      error_msg_path: asyncTaskConfig.error_msg_path || '',
+      success_statuses: Array.isArray(asyncTaskConfig.success_statuses) ? asyncTaskConfig.success_statuses : ['RUNNING', 'QUEUED'],
+      query_method: asyncTaskConfig.query_method || 'POST',
+      query_path: asyncTaskConfig.query_path || '',
+      query_body: asyncTaskConfig.query_body
+        ? (() => {
+            try {
+              return JSON.parse(asyncTaskConfig.query_body);
+            } catch (e) {
+              return {};
+            }
+          })()
+        : {},
+      status_map: parseStatusMapToObject(asyncTaskConfig.status_map),
+      result_list_path: asyncTaskConfig.result_list_path || 'results',
+      result_url_path: asyncTaskConfig.result_url_path || 'url',
+      result_type_path: asyncTaskConfig.result_type_path || 'outputType',
+      output_type: asyncTaskConfig.output_type || 'image',
+      poll_interval_sec: parseInt(asyncTaskConfig.poll_interval_sec) || 5,
+      max_poll_attempts: parseInt(asyncTaskConfig.max_poll_attempts) || 120,
+    };
+
     localInputs.settings = JSON.stringify(settings);
 
     // 清理不需要发送到后端的字段
@@ -2457,7 +2949,7 @@ const EditChannelModal = (props) => {
       >
         <Form
           key={isEdit ? 'edit' : 'new'}
-          initValues={originInputs}
+          initValues={getInitFormValues()}
           getFormApi={(api) => (formApiRef.current = api)}
           onSubmit={submit}
         >
@@ -2918,6 +3410,238 @@ const EditChannelModal = (props) => {
                     <Form.TagInput field='image_generation_model_prefixes' label={t('图片生成模型前缀')} placeholder={t('输入前缀后按回车，例如: gemini-3.1-flash-image')} onChange={(value) => handleChannelSettingsChange('image_generation_model_prefixes', value)} extraText={t('命中这些前缀的模型将被视为图片生成模型（Gemini渠道），请求体将转换为 Gemini chat 格式并追加 responseModalities: [\"IMAGE\"]')} />
                   )}
                 </div>
+
+                {/* Async Task Configuration Section */}
+                {shouldShowAsyncTaskConfig && (
+                  <div className='pt-3 border-t border-gray-100 mt-3'>
+                    <div className='flex items-center justify-between mb-3'>
+                      <Text className='text-sm font-medium text-gray-500'>
+                        {t('异步任务配置')}
+                      </Text>
+                      <Button
+                        size='small'
+                        type='primary'
+                        icon={<IconFile size={14} />}
+                        onClick={() => setShowImportModal(true)}
+                      >
+                        {t('从JSON导入')}
+                      </Button>
+                    </div>
+
+                    <Form.Switch
+                      label={t('启用异步任务模式')}
+                      checkedText={t('开')}
+                      uncheckedText={t('关')}
+                      field='async_task_enabled'
+                      checked={asyncTaskConfig.enabled}
+                      onChange={(value) => handleAsyncTaskConfigChange('enabled', value)}
+                      extraText={t('开启后渠道将以异步轮询方式获取任务结果')}
+                    />
+
+                    <Collapse defaultActiveKey={['asyncTaskDetail']}>
+                      <Collapse.Panel itemKey='asyncTaskDetail' header={t('详细配置')}>
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('任务ID路径')}
+                              placeholder='taskId'
+                              field='async_task_task_id_path'
+                              value={asyncTaskConfig.task_id_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('task_id_path', value)}
+                              showClear
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('状态字段路径')}
+                              placeholder='status'
+                              field='async_task_status_path'
+                              value={asyncTaskConfig.status_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('status_path', value)}
+                              showClear
+                            />
+                          </Col>
+                        </Row>
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('错误码路径')}
+                              placeholder={t('错误码路径')}
+                              field='async_task_error_code_path'
+                              value={asyncTaskConfig.error_code_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('error_code_path', value)}
+                              showClear
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('错误消息路径')}
+                              placeholder={t('错误消息路径')}
+                              field='async_task_error_msg_path'
+                              value={asyncTaskConfig.error_msg_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('error_msg_path', value)}
+                              showClear
+                            />
+                          </Col>
+                        </Row>
+                        <Form.TagInput
+                          label={t('成功状态值')}
+                          placeholder={t('输入后按回车')}
+                          field='async_task_success_statuses'
+                          value={asyncTaskConfig.success_statuses}
+                          onChange={(value) => handleAsyncTaskConfigChange('success_statuses', value)}
+                          extraText={t('逗号分隔，例如 RUNNING,QUEUED')}
+                        />
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.Select
+                              label={t('查询方式')}
+                              placeholder={t('请选择查询方式')}
+                              field='async_task_query_method'
+                              value={asyncTaskConfig.query_method}
+                              optionList={[
+                                { label: 'GET', value: 'GET' },
+                                { label: 'POST', value: 'POST' },
+                              ]}
+                              onChange={(value) => handleAsyncTaskConfigChange('query_method', value)}
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('查询路径')}
+                              placeholder='/openapi/v1/query'
+                              field='async_task_query_path'
+                              value={asyncTaskConfig.query_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('query_path', value)}
+                              showClear
+                            />
+                          </Col>
+                        </Row>
+                        <Form.TextArea
+                          label={t('查询请求体模板')}
+                          placeholder={t('JSON 格式，仅 POST 模式有效')}
+                          field='async_task_query_body'
+                          value={asyncTaskConfig.query_body}
+                          onChange={(value) => handleAsyncTaskConfigChange('query_body', value)}
+                          autosize
+                          extraText={
+                            <div className='flex gap-2 flex-wrap items-center'>
+                              <Text
+                                className='!text-semi-color-primary cursor-pointer'
+                                onClick={() =>
+                                  handleAsyncTaskConfigChange(
+                                    'query_body',
+                                    JSON.stringify({ taskId: '${task_id}' }, null, 2),
+                                  )
+                                }
+                              >
+                                {t('填入模板')}
+                              </Text>
+                            </div>
+                          }
+                          showClear
+                        />
+                        <Form.TextArea
+                          label={t('状态映射')}
+                          placeholder={t('每行一个映射，例如：RUNNING→running')}
+                          field='async_task_status_map'
+                          value={asyncTaskConfig.status_map}
+                          onChange={(value) => handleAsyncTaskConfigChange('status_map', value)}
+                          autosize
+                          extraText={
+                            <div className='flex gap-2 flex-wrap items-center'>
+                              <Text
+                                className='!text-semi-color-primary cursor-pointer'
+                                onClick={() =>
+                                  handleAsyncTaskConfigChange(
+                                    'status_map',
+                                    'QUEUED→pending\nRUNNING→running\nSUCCESS→succeeded\nFAILED→failed',
+                                  )
+                                }
+                              >
+                                {t('填入模板')}
+                              </Text>
+                            </div>
+                          }
+                          showClear
+                        />
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('结果列表路径')}
+                              placeholder='results'
+                              field='async_task_result_list_path'
+                              value={asyncTaskConfig.result_list_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('result_list_path', value)}
+                              showClear
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('结果URL路径')}
+                              placeholder='url'
+                              field='async_task_result_url_path'
+                              value={asyncTaskConfig.result_url_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('result_url_path', value)}
+                              showClear
+                            />
+                          </Col>
+                        </Row>
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.Input
+                              label={t('结果类型路径')}
+                              placeholder='outputType'
+                              field='async_task_result_type_path'
+                              value={asyncTaskConfig.result_type_path}
+                              onChange={(value) => handleAsyncTaskConfigChange('result_type_path', value)}
+                              showClear
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.Select
+                              label={t('输出类型')}
+                              placeholder={t('请选择输出类型')}
+                              field='async_task_output_type'
+                              value={asyncTaskConfig.output_type}
+                              optionList={[
+                                { label: 'image', value: 'image' },
+                                { label: 'video', value: 'video' },
+                                { label: 'audio', value: 'audio' },
+                                { label: 'text', value: 'text' },
+                              ]}
+                              onChange={(value) => handleAsyncTaskConfigChange('output_type', value)}
+                            />
+                          </Col>
+                        </Row>
+                        <Row gutter={12}>
+                          <Col span={12}>
+                            <Form.InputNumber
+                              label={t('轮询间隔(秒)')}
+                              placeholder='5'
+                              min={1}
+                              field='async_task_poll_interval_sec'
+                              value={asyncTaskConfig.poll_interval_sec}
+                              onNumberChange={(value) => handleAsyncTaskConfigChange('poll_interval_sec', value)}
+                              style={{ width: '100%' }}
+                            />
+                          </Col>
+                          <Col span={12}>
+                            <Form.InputNumber
+                              label={t('最大轮询次数')}
+                              placeholder='120'
+                              min={1}
+                              field='async_task_max_poll_attempts'
+                              value={asyncTaskConfig.max_poll_attempts}
+                              onNumberChange={(value) => handleAsyncTaskConfigChange('max_poll_attempts', value)}
+                              style={{ width: '100%' }}
+                            />
+                          </Col>
+                        </Row>
+                      </Collapse.Panel>
+                    </Collapse>
+                  </div>
+                )}
               </div>
             );
 
@@ -4348,6 +5072,98 @@ const EditChannelModal = (props) => {
           showSuccess(t('模型列表已追加更新'));
         }}
       />
+
+      {/* JSON 导入异步任务配置模态框 */}
+      <Modal
+        title={t('从 JSON 导入异步任务配置')}
+        visible={showImportModal}
+        onCancel={handleCloseImportModal}
+        footer={
+          importPreview
+            ? (
+              <Space>
+                <Button onClick={handleCloseImportModal}>
+                  {t('取消')}
+                </Button>
+                <Button type='primary' onClick={handleApplyImportPreview}>
+                  {t('确认填充')}
+                </Button>
+              </Space>
+            )
+            : null
+        }
+        width={640}
+        style={{ maxWidth: '90vw' }}
+      >
+        {!importPreview
+          ? (
+            <div>
+              <div className='mb-2'>
+                <Text size='small' style={{ fontWeight: 500, marginBottom: 4, display: 'block' }}>
+                  {t('粘贴上游 API 返回的 JSON 示例')}
+                </Text>
+                <TextArea
+                  placeholder={t('请粘贴 JSON 字符串...')}
+                  value={importJsonText}
+                  onChange={(value) => setImportJsonText(value)}
+                  autosize
+                  rows={10}
+                />
+              </div>
+              {importError && (
+                <div className='mt-2'>
+                  <Text type='danger' size='small'>
+                    {importError}
+                  </Text>
+                </div>
+              )}
+              <Button
+                type='primary'
+                theme='solid'
+                onClick={handleParseImportJson}
+                disabled={!importJsonText.trim()}
+                style={{ marginTop: 12 }}
+              >
+                {t('解析并填充')}
+              </Button>
+            </div>
+          )
+          : (
+            <div>
+              <Text type='tertiary' size='small'>
+                {t('检测到以下字段，点击确认将自动填充到异步任务配置中')}
+              </Text>
+              <div className='mt-3 rounded-xl p-3' style={{ backgroundColor: 'var(--semi-color-fill-0)', border: '1px solid var(--semi-color-fill-2)' }}>
+                {[
+                  { key: 'task_id_path', label: '任务ID路径' },
+                  { key: 'status_path', label: '状态字段路径' },
+                  { key: 'error_code_path', label: '错误码路径' },
+                  { key: 'error_msg_path', label: '错误消息路径' },
+                  { key: 'success_statuses', label: '成功状态值' },
+                  { key: 'result_list_path', label: '结果列表路径' },
+                  { key: 'result_url_path', label: '结果URL路径' },
+                  { key: 'result_type_path', label: '结果类型路径' },
+                  { key: 'output_type', label: '输出类型' },
+                  { key: 'status_map', label: '状态映射' },
+                ].map(({ key, label }) => {
+                  let displayVal = importPreview[key];
+                  if (Array.isArray(displayVal)) displayVal = displayVal.join(', ');
+                  if (displayVal === '') displayVal = <Text type='danger' size='small'>{t('未检测到')}</Text>;
+                  return (
+                    <div key={key} className='flex items-center py-1.5 border-b border-gray-50 last:border-b-0'>
+                      <Text size='small' style={{ width: 120 }} type='tertiary'>
+                        {label}
+                      </Text>
+                      <Text size='small' style={{ flex: 1, wordBreak: 'break-all' }}>
+                        {String(displayVal || '')}
+                      </Text>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+      </Modal>
     </>
   );
 };

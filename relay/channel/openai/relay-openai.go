@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/async_task"
 	"github.com/QuantumNous/new-api/relay/channel/openrouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -214,9 +215,28 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
 	}
+	fmt.Println("=== upstream raw response ===")
+	fmt.Println(string(responseBody))
+	fmt.Println("=== upstream raw response end ===")
 	if common.DebugEnabled {
 		println("upstream response body:", string(responseBody))
 	}
+
+	// Async task detection — must run before response override.
+	// If the upstream returned a task-style response (e.g., {"taskId":"...","status":"RUNNING"}),
+	// handle it asynchronously instead of trying to parse as a chat completion.
+	if info.ChannelMeta != nil && info.ChannelOtherSettings.AsyncTask != nil &&
+		info.ChannelOtherSettings.AsyncTask.IsActive() {
+		if taskID, _ := async_task.TryDetectAsyncTask(responseBody, info.ChannelOtherSettings.AsyncTask); taskID != "" {
+			if err := async_task.HandleAsyncTaskSubmit(c, info, taskID, responseBody, info.ChannelOtherSettings.AsyncTask); err == nil {
+				info.AsyncTaskHandled = true
+				return &dto.Usage{}, nil
+			}
+			// If task handling fails (e.g., DB error), fall through to normal error handling
+			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
+	}
+
 	// Apply response override before any format conversion
 	if relaycommon.HasResponseOverride(info) {
 		responseBody, err = relaycommon.ApplyResponseOverrideWithRelayInfo(responseBody, info)
@@ -598,6 +618,19 @@ func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+
+	// Async task detection for image/video generation
+	if info.ChannelMeta != nil && info.ChannelOtherSettings.AsyncTask != nil &&
+		info.ChannelOtherSettings.AsyncTask.IsActive() {
+		if taskID, _ := async_task.TryDetectAsyncTask(responseBody, info.ChannelOtherSettings.AsyncTask); taskID != "" {
+			asyncErr := async_task.HandleAsyncTaskSubmit(c, info, taskID, responseBody, info.ChannelOtherSettings.AsyncTask)
+			if asyncErr == nil {
+				info.AsyncTaskHandled = true
+				return &dto.Usage{}, nil
+			}
+			return nil, types.NewOpenAIError(asyncErr, types.ErrorCodeBadResponse, http.StatusInternalServerError)
+		}
 	}
 
 	// Apply response override before auto-store (e.g., strip model/usage from third-party proxies)
