@@ -43,7 +43,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "node ./scripts/build.mjs",
+    "build": "vite build",
     "lint": "prettier . --check",
     "lint:fix": "prettier . --write",
     "eslint": "bunx eslint \"**/*.{js,jsx}\" --cache",

@@ -116,7 +116,6 @@ const SystemSetting = () => {
     'cos_setting.region': '',
     'cos_setting.bucket': '',
     'cos_setting.public_base_url': '',
-    'cos_setting.cache_control': 'max-age=2592000',
     'cos_setting.path_prefix': 'images',
     'cos_setting.read_timeout_seconds': 120,
     'cos_setting.max_upload_mb': 20,
@@ -451,10 +450,6 @@ const SystemSetting = () => {
         value: removeTrailingSlash(
           nextValues['cos_setting.public_base_url'] || '',
         ),
-      },
-      {
-        key: 'cos_setting.cache_control',
-        value: nextValues['cos_setting.cache_control'] || '',
       },
       {
         key: 'cos_setting.path_prefix',
@@ -933,24 +928,14 @@ const SystemSetting = () => {
                     gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
                     style={{ marginTop: 16 }}
                   >
-                    <Col xs={24} sm={24} md={8} lg={8} xl={8}>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
                       <Form.Input
                         field="['cos_setting.public_base_url']"
                         label={t('公开访问地址')}
                         placeholder='https://cdn.example.com'
                       />
                     </Col>
-                    <Col xs={24} sm={24} md={8} lg={8} xl={8}>
-                      <Form.Input
-                        field="['cos_setting.cache_control']"
-                        label={t('缓存控制')}
-                        placeholder='max-age=2592000'
-                        extraText={t(
-                          '上传到 COS 时写入对象的 Cache-Control 头，留空表示不设置。',
-                        )}
-                      />
-                    </Col>
-                    <Col xs={24} sm={24} md={4} lg={4} xl={4}>
+                    <Col xs={24} sm={24} md={6} lg={6} xl={6}>
                       <Form.InputNumber
                         field="['cos_setting.read_timeout_seconds']"
                         label={t('下载超时(秒)')}
@@ -958,7 +943,7 @@ const SystemSetting = () => {
                         style={{ width: '100%' }}
                       />
                     </Col>
-                    <Col xs={24} sm={24} md={4} lg={4} xl={4}>
+                    <Col xs={24} sm={24} md={6} lg={6} xl={6}>
                       <Form.InputNumber
                         field="['cos_setting.max_upload_mb']"
                         label={t('最大上传(MB)')}

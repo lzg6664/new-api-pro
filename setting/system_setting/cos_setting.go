@@ -15,7 +15,6 @@ type COSSetting struct {
 	Region                 string `json:"region"`
 	Bucket                 string `json:"bucket"`
 	PublicBaseURL          string `json:"public_base_url"`
-	CacheControl           string `json:"cache_control"`
 	PathPrefix             string `json:"path_prefix"`
 	ReadTimeoutSeconds     int    `json:"read_timeout_seconds"`
 	MaxUploadMB            int    `json:"max_upload_mb"`
@@ -28,7 +27,6 @@ var defaultCOSSetting = COSSetting{
 	Enabled:                false,
 	Region:                 "ap-beijing",
 	Bucket:                 "ldz-1304506381",
-	CacheControl:           "max-age=2592000",
 	PathPrefix:             "static",
 	ReadTimeoutSeconds:     120,
 	MaxUploadMB:            20,

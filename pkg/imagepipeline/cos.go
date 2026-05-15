@@ -129,19 +129,14 @@ func UploadBytesToCOS(ctx context.Context, data []byte, contentType string, obje
 		objectKey = buildCOSObjectKey(setting, contentType, data)
 	}
 
-	headerOptions := &cos.ObjectPutHeaderOptions{
-		ContentType: contentType,
-	}
-	if cacheControl := strings.TrimSpace(setting.CacheControl); cacheControl != "" {
-		headerOptions.CacheControl = cacheControl
-	}
-
 	_, err = client.Object.Put(
 		ctx,
 		objectKey,
 		bytes.NewReader(data),
 		&cos.ObjectPutOptions{
-			ObjectPutHeaderOptions: headerOptions,
+			ObjectPutHeaderOptions: &cos.ObjectPutHeaderOptions{
+				ContentType: contentType,
+			},
 		},
 	)
 	if err != nil {
