@@ -18,9 +18,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// HandleAsyncTaskSubmit 处理异步任务提交。
-// 在 OpenaiHandler 等 response handler 中检测到任务响应后调用。
-// 返回 error 表示存储失败（此时客户端尚未收到响应）。
+// HandleAsyncTaskSubmit stores the upstream task and either:
+// 1) returns the submit response immediately while polling in background; or
+// 2) blocks and returns the final image result when sync_mode=true.
 func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 	upstreamTaskID string, rawBody []byte, config *dto.ChannelAsyncTaskConfig) error {
 
@@ -30,22 +30,19 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 
 	config.Defaults()
 
-	// 1. 生成公开 task ID
 	publicTaskID := model.GenerateTaskID()
+	info.PublicTaskID = publicTaskID
 
-	// 2. 生成 Data（存储原始响应用于后续轮询）
 	taskData := TaskAsyncSubmitData{
 		UpstreamTaskID: upstreamTaskID,
 		RawSubmitBody:  json.RawMessage(rawBody),
 	}
 
-	// 3. 取 action（TaskRelayInfo 在 OpenAI 通道上下文中为 nil，使用默认值）
 	action := "generate"
 	if info.TaskRelayInfo != nil && info.Action != "" {
 		action = info.Action
 	}
 
-	// 4. 构建 task 并入库
 	task := &model.Task{
 		TaskID:     publicTaskID,
 		Platform:   constant.TaskPlatform(strconv.Itoa(info.ChannelType)),
@@ -68,7 +65,6 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 		return err
 	}
 
-	// 5. 结算计费：任务提交成功即 settle 预扣额
 	if info.Billing != nil {
 		quota := info.PriceData.Quota
 		if quota <= 0 {
@@ -81,16 +77,26 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 	}
 
-	// 6. 同步轮询上游，等待最终结果
+	submitBody := replaceByPath(rawBody, config.TaskIDPath, publicTaskID)
+
+	if !config.SyncMode {
+		pollInfo := *info
+		pollConfig := *config
+		go StartTaskPolling(task, &pollInfo, &pollConfig)
+
+		c.Writer.Header().Set("Content-Type", "application/json")
+		c.Writer.WriteHeader(http.StatusOK)
+		_, err := c.Writer.Write(submitBody)
+		return err
+	}
+
 	baseURL := strings.TrimRight(info.ChannelBaseUrl, "/")
 	result, err := PollSynchronously(baseURL, info.ApiKey, upstreamTaskID, config)
 	if err != nil {
-		// 轮询失败，更新任务状态并返回错误
 		failTask(task, err.Error())
 		return err
 	}
 
-	// 7. 构建标准 OpenAI ImageResponse 返回给客户端
 	imageResp := dto.ImageResponse{
 		Data:    make([]dto.ImageData, 0, len(result.ImageURLs)),
 		Created: time.Now().Unix(),
@@ -99,7 +105,6 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 		imageResp.Data = append(imageResp.Data, dto.ImageData{Url: url})
 	}
 
-	// 更新任务状态为成功
 	resultBytes, _ := common.Marshal(imageResp)
 	succeedTask(task, json.RawMessage(resultBytes), string(result.RawBody))
 

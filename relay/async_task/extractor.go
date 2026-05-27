@@ -73,3 +73,74 @@ func navigateField(current any, part string) any {
 	}
 	return m[part]
 }
+
+// replaceByPath replaces a JSON value at a dot/bracket path and returns the updated body.
+// When the path cannot be resolved, the original body is returned unchanged.
+func replaceByPath(body []byte, path string, value any) []byte {
+	if path == "" || len(body) == 0 {
+		return body
+	}
+
+	var data any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return body
+	}
+
+	parts := parsePath(path)
+	if len(parts) == 0 {
+		return body
+	}
+
+	if !setFieldValue(data, parts, value) {
+		return body
+	}
+
+	updated, err := json.Marshal(data)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func setFieldValue(current any, parts []string, value any) bool {
+	if len(parts) == 0 {
+		return false
+	}
+
+	part := parts[0]
+	isLast := len(parts) == 1
+
+	if strings.HasPrefix(part, "[") && strings.HasSuffix(part, "]") {
+		idxStr := part[1 : len(part)-1]
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			return false
+		}
+		arr, ok := current.([]any)
+		if !ok || idx < 0 || idx >= len(arr) {
+			return false
+		}
+		if isLast {
+			arr[idx] = value
+			return true
+		}
+		return setFieldValue(arr[idx], parts[1:], value)
+	}
+
+	obj, ok := current.(map[string]any)
+	if !ok {
+		return false
+	}
+	if isLast {
+		if _, exists := obj[part]; !exists {
+			return false
+		}
+		obj[part] = value
+		return true
+	}
+	next, exists := obj[part]
+	if !exists {
+		return false
+	}
+	return setFieldValue(next, parts[1:], value)
+}
