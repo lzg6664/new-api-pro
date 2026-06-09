@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,6 +157,96 @@ func TestHandleAsyncTaskSubmitSyncModeUpdatesExistingConsumeLog(t *testing.T) {
 	require.Equal(t, "https://example.com/final.png", resultURLs[0])
 }
 
+func TestHandleAsyncTaskSubmitSyncModeReturnsBase64ImageData(t *testing.T) {
+	setupAsyncTaskTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/query", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"SUCCESS","data":[{"b64_json":"ZmFrZS1pbWFnZQ=="}]}`))
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("token_name", "test-token")
+	c.Set("username", "alice")
+
+	config := &dto.ChannelAsyncTaskConfig{
+		Enabled:         true,
+		SyncMode:        true,
+		TaskIDPath:      "taskId",
+		StatusPath:      "status",
+		SuccessStatuses: []string{"QUEUED"},
+		QueryMethod:     "GET",
+		QueryPath:       "/query",
+		PollIntervalSec: 1,
+		MaxPollAttempts: 1,
+		StatusMap:       map[string]string{"SUCCESS": "succeeded", "FAILED": "failed"},
+		ResultListPath:  "results",
+		ResultURLPath:   "url",
+		OutputType:      "image",
+	}
+	info := newAsyncTaskTestRelayInfo()
+	info.ChannelBaseUrl = server.URL
+
+	err := HandleAsyncTaskSubmit(c, info, "upstream_123", []byte(`{"taskId":"upstream_123","status":"QUEUED"}`), config)
+	require.NoError(t, err)
+
+	var response dto.ImageResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, "ZmFrZS1pbWFnZQ==", response.Data[0].B64Json)
+	require.Empty(t, response.Data[0].Url)
+}
+
+func TestHandleAsyncTaskSubmitSyncModeFailsWhenSuccessHasNoImageResult(t *testing.T) {
+	setupAsyncTaskTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/query", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"SUCCESS","results":[{"text":"done"}]}`))
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("token_name", "test-token")
+	c.Set("username", "alice")
+
+	config := &dto.ChannelAsyncTaskConfig{
+		Enabled:         true,
+		SyncMode:        true,
+		TaskIDPath:      "taskId",
+		StatusPath:      "status",
+		SuccessStatuses: []string{"QUEUED"},
+		QueryMethod:     "GET",
+		QueryPath:       "/query",
+		PollIntervalSec: 1,
+		MaxPollAttempts: 1,
+		StatusMap:       map[string]string{"SUCCESS": "succeeded", "FAILED": "failed"},
+		ResultListPath:  "results",
+		ResultURLPath:   "url",
+		OutputType:      "image",
+	}
+	info := newAsyncTaskTestRelayInfo()
+	info.ChannelBaseUrl = server.URL
+
+	err := HandleAsyncTaskSubmit(c, info, "upstream_123", []byte(`{"taskId":"upstream_123","status":"QUEUED"}`), config)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no image result found")
+
+	var task model.Task
+	require.NoError(t, model.DB.Where("user_id = ?", 1).First(&task).Error)
+	require.EqualValues(t, model.TaskStatusFailure, task.Status)
+	require.Contains(t, task.FailReason, "no image result found")
+}
+
 func TestHandleAsyncTaskSubmitSyncModeRecordsPollingFailureReason(t *testing.T) {
 	setupAsyncTaskTestDB(t)
 	gin.SetMode(gin.TestMode)
@@ -215,6 +306,55 @@ func TestHandleAsyncTaskSubmitSyncModeRecordsPollingFailureReason(t *testing.T) 
 	require.Equal(t, other["error_message"], other["reason"])
 }
 
+func TestHandleAsyncTaskSubmitSyncModeStopsWhenChannelDisabled(t *testing.T) {
+	setupAsyncTaskTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	var called atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"SUCCESS","results":[{"url":"https://example.com/final.png"}]}`))
+	}))
+	defer server.Close()
+
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", 1001).Update("status", common.ChannelStatusManuallyDisabled).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+	c.Set("token_name", "test-token")
+	c.Set("username", "alice")
+
+	config := &dto.ChannelAsyncTaskConfig{
+		Enabled:         true,
+		SyncMode:        true,
+		TaskIDPath:      "taskId",
+		StatusPath:      "status",
+		SuccessStatuses: []string{"QUEUED"},
+		QueryMethod:     "GET",
+		QueryPath:       "/query",
+		PollIntervalSec: 1,
+		MaxPollAttempts: 1,
+		StatusMap:       map[string]string{"SUCCESS": "succeeded"},
+		ResultListPath:  "results",
+		ResultURLPath:   "url",
+		OutputType:      "image",
+	}
+	info := newAsyncTaskTestRelayInfo()
+	info.ChannelBaseUrl = server.URL
+
+	err := HandleAsyncTaskSubmit(c, info, "upstream_123", []byte(`{"taskId":"upstream_123","status":"QUEUED"}`), config)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "channel #1001 is disabled")
+	require.False(t, called.Load())
+
+	var task model.Task
+	require.NoError(t, model.DB.Where("user_id = ?", 1).First(&task).Error)
+	require.EqualValues(t, model.TaskStatusFailure, task.Status)
+	require.Contains(t, task.FailReason, "channel #1001 is disabled")
+}
+
 func newAsyncTaskTestRelayInfo() *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
 		UserId:          1,
@@ -272,7 +412,7 @@ func setupAsyncTaskTestDB(t *testing.T) {
 
 	require.NoError(t, db.AutoMigrate(&model.Task{}, &model.Log{}, &model.User{}, &model.Channel{}))
 	require.NoError(t, db.Create(&model.User{Id: 1, Username: "alice", Password: "password123", Group: "default"}).Error)
-	require.NoError(t, db.Create(&model.Channel{Id: 1001, Type: constant.ChannelTypeOpenAI, Key: "test-key", Name: "openai"}).Error)
+	require.NoError(t, db.Create(&model.Channel{Id: 1001, Type: constant.ChannelTypeOpenAI, Key: "test-key", Name: "openai", Status: common.ChannelStatusEnabled}).Error)
 
 	t.Cleanup(func() {
 		_ = sqlDB.Close()

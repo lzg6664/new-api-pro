@@ -97,6 +97,30 @@ func TestDefaultChannelSelectionPollsByGroupAndModel(t *testing.T) {
 	assert.Equal(t, 101, channel.Id)
 }
 
+func TestDefaultChannelSelectionSkipsDisabledChannelsInCacheIndex(t *testing.T) {
+	withChannelCacheState(t)
+
+	group2model2channels = map[string]map[string][]int{
+		"default": {
+			"gpt-test": []int{101, 102},
+		},
+	}
+	channelsIDM = map[int]*Channel{
+		101: &Channel{Id: 101, Status: common.ChannelStatusManuallyDisabled},
+		102: &Channel{Id: 102, Status: common.ChannelStatusEnabled},
+	}
+
+	channel, err := GetRandomSatisfiedChannel("default", "gpt-test", 0)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 102, channel.Id)
+
+	channelsIDM[102].Status = common.ChannelStatusAutoDisabled
+	channel, err = GetRandomSatisfiedChannel("default", "gpt-test", 0)
+	require.NoError(t, err)
+	assert.Nil(t, channel)
+}
+
 func TestSameModelPollsDifferentChannelsAndSameChannelDifferentKeys(t *testing.T) {
 	withChannelCacheState(t)
 
@@ -212,6 +236,55 @@ func TestDBChannelSelectionPollsPrioritySortedChannels(t *testing.T) {
 	assert.Equal(t, []int{101, 102, 101, 102}, channelIds)
 }
 
+func TestDBChannelSelectionSkipsDisabledChannelWithStaleAbility(t *testing.T) {
+	truncateTables(t)
+
+	oldMemoryCacheEnabled := common.MemoryCacheEnabled
+	oldGroup2Model2PollingIndex := group2model2pollingIndex
+	common.MemoryCacheEnabled = false
+	group2model2pollingIndex = map[string]map[string]int{}
+	initCol()
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = oldMemoryCacheEnabled
+		group2model2pollingIndex = oldGroup2Model2PollingIndex
+	})
+
+	highPriority := int64(100)
+	lowPriority := int64(10)
+	require.NoError(t, DB.Create(&Channel{
+		Id:       201,
+		Type:     1,
+		Key:      "disabled-key",
+		Group:    "default",
+		Models:   "banana-pro",
+		Status:   common.ChannelStatusManuallyDisabled,
+		Priority: &highPriority,
+	}).Error)
+	require.NoError(t, DB.Create(&Channel{
+		Id:       202,
+		Type:     1,
+		Key:      "enabled-key",
+		Group:    "default",
+		Models:   "banana-pro",
+		Status:   common.ChannelStatusEnabled,
+		Priority: &lowPriority,
+	}).Error)
+	require.NoError(t, DB.Create(&[]Ability{
+		{Group: "default", Model: "banana-pro", ChannelId: 201, Enabled: true, Priority: &highPriority},
+		{Group: "default", Model: "banana-pro", ChannelId: 202, Enabled: true, Priority: &lowPriority},
+	}).Error)
+
+	channel, err := GetRandomSatisfiedChannel("default", "banana-pro", 0)
+	require.NoError(t, err)
+	require.NotNil(t, channel)
+	assert.Equal(t, 202, channel.Id)
+
+	require.NoError(t, DB.Model(&Channel{}).Where("id = ?", 202).Update("status", common.ChannelStatusAutoDisabled).Error)
+	channel, err = GetRandomSatisfiedChannel("default", "banana-pro", 0)
+	require.NoError(t, err)
+	assert.Nil(t, channel)
+}
+
 func TestCacheUpdateChannelRefreshesGroupModelIndex(t *testing.T) {
 	withChannelCacheState(t)
 
@@ -243,6 +316,56 @@ func TestCacheUpdateChannelRefreshesGroupModelIndex(t *testing.T) {
 	CacheUpdateChannel(updatedChannel)
 
 	assert.Empty(t, group2model2channels["vip"]["new-model"])
+}
+
+func TestUpdateChannelStatusRefreshesMultiKeyCacheIndex(t *testing.T) {
+	truncateTables(t)
+	withChannelCacheState(t)
+	initCol()
+
+	channel := Channel{
+		Id:     301,
+		Type:   1,
+		Key:    "key-1\nkey-2",
+		Group:  "default",
+		Models: "gpt-test",
+		Status: common.ChannelStatusEnabled,
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+		},
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+	require.NoError(t, DB.Create(&Ability{
+		Group:     "default",
+		Model:     "gpt-test",
+		ChannelId: channel.Id,
+		Enabled:   true,
+	}).Error)
+
+	cachedChannel := channel
+	channelsIDM[channel.Id] = &cachedChannel
+	group2model2channels = map[string]map[string][]int{
+		"default": {
+			"gpt-test": []int{channel.Id},
+		},
+	}
+
+	require.True(t, UpdateChannelStatus(channel.Id, "key-1", common.ChannelStatusAutoDisabled, "bad key"))
+	assert.Equal(t, common.ChannelStatusEnabled, channelsIDM[channel.Id].Status)
+	assert.Equal(t, []int{channel.Id}, group2model2channels["default"]["gpt-test"])
+
+	require.True(t, UpdateChannelStatus(channel.Id, "key-2", common.ChannelStatusAutoDisabled, "bad key"))
+	assert.Equal(t, common.ChannelStatusAutoDisabled, channelsIDM[channel.Id].Status)
+	assert.Empty(t, group2model2channels["default"]["gpt-test"])
+
+	selected, err := GetRandomSatisfiedChannel("default", "gpt-test", 0)
+	require.NoError(t, err)
+	assert.Nil(t, selected)
+
+	require.True(t, UpdateChannelStatus(channel.Id, "key-1", common.ChannelStatusEnabled, ""))
+	assert.Equal(t, common.ChannelStatusEnabled, channelsIDM[channel.Id].Status)
+	assert.Equal(t, []int{channel.Id}, group2model2channels["default"]["gpt-test"])
 }
 
 func TestChannelUpdatePersistsEmptyEditableFieldsAndKeepsKeyWhenEmpty(t *testing.T) {

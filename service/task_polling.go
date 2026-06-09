@@ -187,6 +187,10 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		}
 		return err
 	}
+	if ch.Status != common.ChannelStatusEnabled {
+		logger.LogInfo(ctx, fmt.Sprintf("Channel #%d is disabled (status=%d), skip polling %d pending tasks", channelId, ch.Status, len(taskIds)))
+		return nil
+	}
 	adaptor := GetTaskAdaptorFunc(constant.TaskPlatformSuno)
 	if adaptor == nil {
 		return errors.New("adaptor not found")
@@ -320,6 +324,10 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 			common.SysLog(fmt.Sprintf("UpdateVideoTask error: %v", errUpdate))
 		}
 		return fmt.Errorf("CacheGetChannel failed: %w", err)
+	}
+	if cacheGetChannel.Status != common.ChannelStatusEnabled {
+		logger.LogInfo(ctx, fmt.Sprintf("Channel #%d is disabled (status=%d), skip polling %d pending tasks", channelId, cacheGetChannel.Status, len(taskIds)))
+		return nil
 	}
 	adaptor := GetTaskAdaptorFunc(platform)
 	if adaptor == nil {

@@ -49,6 +49,11 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		time.Sleep(interval)
+		if err := ensureChannelPollingEnabled(info.ChannelId); err != nil {
+			lastPollFailure = err.Error()
+			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d skipped for task %s: %s", attempt+1, maxAttempts, task.TaskID, err.Error()))
+			continue
+		}
 
 		// 查询上游任务状态
 		resp, err := doQueryRequest(baseURL, info.ApiKey, upstreamTaskID, config)
@@ -178,11 +183,18 @@ func extractResultList(body []byte, config *dto.ChannelAsyncTaskConfig) []map[st
 	if config.ResultListPath == "" {
 		return nil
 	}
+	return extractResultListAtPath(body, config.ResultListPath)
+}
+
+func extractResultListAtPath(body []byte, path string) []map[string]any {
+	if path == "" {
+		return nil
+	}
 	var data any
 	if err := common.Unmarshal(body, &data); err != nil {
 		return nil
 	}
-	for _, part := range parsePath(config.ResultListPath) {
+	for _, part := range parsePath(path) {
 		data = navigateField(data, part)
 		if data == nil {
 			return nil
@@ -245,6 +257,20 @@ func compactPollingFailureMessage(message string) string {
 		return message
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+func ensureChannelPollingEnabled(channelID int) error {
+	if channelID <= 0 {
+		return nil
+	}
+	channel, err := model.GetChannelById(channelID, true)
+	if err != nil {
+		return fmt.Errorf("failed to get channel #%d status: %w", channelID, err)
+	}
+	if channel.Status != common.ChannelStatusEnabled {
+		return fmt.Errorf("channel #%d is disabled (status=%d)", channelID, channel.Status)
+	}
+	return nil
 }
 
 // updateTaskProgress uses CAS to move the task from a non-terminal state to IN_PROGRESS.
@@ -312,13 +338,14 @@ func failTask(task *model.Task, reason string) bool {
 
 // PollSynchronouslyResult 同步轮询的返回结果。
 type PollSynchronouslyResult struct {
-	ImageURLs []string // 最终提取到的图片 URL 列表
-	RawBody   []byte   // 最后一次轮询的原始响应
+	ImageData []dto.ImageData // 最终提取到的图片数据
+	ImageURLs []string        // 最终提取到的图片 URL 列表
+	RawBody   []byte          // 最后一次轮询的原始响应
 }
 
 // PollSynchronously 同步轮询上游任务状态，直到终态或超时。
 // 阻塞调用方，适用于将异步任务转为同步等待的场景。
-func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.ChannelAsyncTaskConfig) (*PollSynchronouslyResult, error) {
+func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.ChannelAsyncTaskConfig, channelID ...int) (*PollSynchronouslyResult, error) {
 	interval := time.Duration(config.PollIntervalSec) * time.Second
 	if interval < 3*time.Second {
 		interval = 3 * time.Second
@@ -328,10 +355,19 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		maxAttempts = 120
 	}
 
+	pollChannelID := 0
+	if len(channelID) > 0 {
+		pollChannelID = channelID[0]
+	}
+
 	lastPollFailure := ""
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(interval)
+		}
+
+		if err := ensureChannelPollingEnabled(pollChannelID); err != nil {
+			return nil, err
 		}
 
 		resp, err := doQueryRequest(baseURL, apiKey, upstreamTaskID, config)
@@ -356,8 +392,11 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 
 		switch mapped {
 		case "succeeded", "completed", "success":
-			urls := extractImageURLs(body, config)
-			return &PollSynchronouslyResult{ImageURLs: urls, RawBody: body}, nil
+			imageData := extractImageData(body, config)
+			if len(imageData) == 0 {
+				return nil, fmt.Errorf("async task succeeded but no image result found (result_list_path=%q, result_url_path=%q)", config.ResultListPath, config.ResultURLPath)
+			}
+			return &PollSynchronouslyResult{ImageData: imageData, ImageURLs: imageURLsFromImageData(imageData), RawBody: body}, nil
 
 		case "failed", "failure", "error":
 			errCode, errMsg := extractTaskDiagnostic(body, config)
@@ -377,15 +416,105 @@ func extractImageURLs(body []byte, config *dto.ChannelAsyncTaskConfig) []string 
 	return resultURLsFromResults(results, config)
 }
 
+func extractImageData(body []byte, config *dto.ChannelAsyncTaskConfig) []dto.ImageData {
+	for _, listPath := range imageResultListPaths(config.ResultListPath) {
+		results := extractResultListAtPath(body, listPath)
+		if items := imageDataFromResults(results, config); len(items) > 0 {
+			return items
+		}
+	}
+	return nil
+}
+
+func imageResultListPaths(configuredPath string) []string {
+	paths := make([]string, 0, 4)
+	seen := map[string]bool{}
+	for _, path := range []string{configuredPath, "result.data", "data", "results", "output", "images"} {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	return paths
+}
+
 func resultURLsFromResults(results []map[string]any, config *dto.ChannelAsyncTaskConfig) []string {
-	if len(results) == 0 {
+	return imageURLsFromImageData(imageDataFromResults(results, config))
+}
+
+func imageURLsFromImageData(items []dto.ImageData) []string {
+	if len(items) == 0 {
 		return nil
 	}
-	var urls []string
-	for _, item := range results {
-		if url, ok := item[config.ResultURLPath].(string); ok && url != "" {
-			urls = append(urls, url)
+	urls := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Url != "" {
+			urls = append(urls, item.Url)
 		}
 	}
 	return urls
+}
+
+func imageDataFromResults(results []map[string]any, config *dto.ChannelAsyncTaskConfig) []dto.ImageData {
+	if len(results) == 0 {
+		return nil
+	}
+	items := make([]dto.ImageData, 0, len(results))
+	for _, item := range results {
+		image := dto.ImageData{}
+		if value := extractStringFromValue(item, config.ResultURLPath); value != "" {
+			if isBase64ResultPath(config.ResultURLPath) {
+				image.B64Json = value
+			} else {
+				image.Url = value
+			}
+		}
+		if image.B64Json == "" {
+			image.B64Json = firstStringFromValue(item, []string{"b64_json", "base64", "b64", "image_base64"})
+		}
+		if image.Url == "" {
+			image.Url = firstStringFromValue(item, []string{"url", "image_url", "imageUrl"})
+		}
+		if image.Url != "" || image.B64Json != "" {
+			items = append(items, image)
+		}
+	}
+	return items
+}
+
+func extractStringFromValue(data any, path string) string {
+	if path == "" {
+		return ""
+	}
+	current := data
+	for _, part := range parsePath(path) {
+		current = navigateField(current, part)
+		if current == nil {
+			return ""
+		}
+	}
+	value, ok := current.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func firstStringFromValue(data any, paths []string) string {
+	for _, path := range paths {
+		if value := extractStringFromValue(data, path); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isBase64ResultPath(path string) bool {
+	path = strings.ToLower(strings.TrimSpace(path))
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "b64") || strings.Contains(path, "base64")
 }

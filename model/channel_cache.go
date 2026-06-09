@@ -123,18 +123,32 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 
 	if len(channels) == 1 {
 		if channel, ok := channelsIDM[channels[0]]; ok {
-			return channel, nil
+			if channel.Status == common.ChannelStatusEnabled {
+				return channel, nil
+			}
+			return nil, nil
 		}
 		return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
 	}
 
+	enabledChannels := make([]*Channel, 0, len(channels))
 	uniquePriorities := make(map[int]bool)
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
+			if channel.Status != common.ChannelStatusEnabled {
+				continue
+			}
+			enabledChannels = append(enabledChannels, channel)
 			uniquePriorities[int(channel.GetPriority())] = true
 		} else {
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
 		}
+	}
+	if len(enabledChannels) == 0 {
+		return nil, nil
+	}
+	if len(enabledChannels) == 1 {
+		return enabledChannels[0], nil
 	}
 	var sortedUniquePriorities []int
 	for priority := range uniquePriorities {
@@ -150,6 +164,9 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	var pollingChannels []*Channel
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
+			if channel.Status != common.ChannelStatusEnabled {
+				continue
+			}
 			pollingChannels = append(pollingChannels, channel)
 		} else {
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
@@ -178,7 +195,7 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	for attempt := 0; attempt < len(pollingChannels); attempt++ {
 		ch := pollingChannels[idx]
 		idx = (idx + 1) % len(pollingChannels)
-		if _, ok := channelsIDM[ch.Id]; ok {
+		if cached, ok := channelsIDM[ch.Id]; ok && cached.Status == common.ChannelStatusEnabled {
 			group2model2pollingIndex[group][model] = idx
 			return ch, nil
 		}

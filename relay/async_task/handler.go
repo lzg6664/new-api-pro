@@ -99,7 +99,7 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 
 	baseURL := strings.TrimRight(info.ChannelBaseUrl, "/")
-	result, err := PollSynchronously(baseURL, info.ApiKey, upstreamTaskID, config)
+	result, err := PollSynchronously(baseURL, info.ApiKey, upstreamTaskID, config, info.ChannelId)
 	if err != nil {
 		if failTask(task, err.Error()) {
 			updateAsyncTaskConsumeLog(task, "failed", "async task failed", nil, err.Error())
@@ -108,12 +108,10 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 
 	imageResp := dto.ImageResponse{
-		Data:    make([]dto.ImageData, 0, len(result.ImageURLs)),
+		Data:    make([]dto.ImageData, 0, len(result.ImageData)),
 		Created: time.Now().Unix(),
 	}
-	for _, url := range result.ImageURLs {
-		imageResp.Data = append(imageResp.Data, dto.ImageData{Url: url})
-	}
+	imageResp.Data = append(imageResp.Data, result.ImageData...)
 
 	resultBytes, _ := common.Marshal(imageResp)
 	if succeedTask(task, json.RawMessage(resultBytes), string(result.RawBody)) {

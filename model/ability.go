@@ -116,6 +116,9 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 		if err != nil {
 			continue // skip if channel not found
 		}
+		if ch.Status != common.ChannelStatusEnabled {
+			continue // ability rows can be stale; channel status is the final guard
+		}
 		pollingChannels = append(pollingChannels, &ch)
 	}
 

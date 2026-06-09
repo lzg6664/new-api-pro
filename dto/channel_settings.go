@@ -126,7 +126,7 @@ func (c *ChannelAsyncTaskConfig) Defaults() {
 		c.StatusPath = "status"
 	}
 	if len(c.SuccessStatuses) == 0 {
-		c.SuccessStatuses = []string{"RUNNING", "QUEUED"}
+		c.SuccessStatuses = []string{"RUNNING", "QUEUED", "PENDING", "PROCESSING", "SUBMITTED", "IN_PROGRESS", "COMPLETED", "SUCCESS", "queued", "in_progress", "completed"}
 	}
 	if c.QueryMethod == "" {
 		c.QueryMethod = "GET"
@@ -136,10 +136,22 @@ func (c *ChannelAsyncTaskConfig) Defaults() {
 	}
 	if c.StatusMap == nil {
 		c.StatusMap = map[string]string{
-			"QUEUED":  "pending",
-			"RUNNING": "running",
-			"SUCCESS": "succeeded",
-			"FAILED":  "failed",
+			"QUEUED":      "pending",
+			"RUNNING":     "running",
+			"PENDING":     "pending",
+			"PROCESSING":  "running",
+			"SUBMITTED":   "running",
+			"IN_PROGRESS": "running",
+			"SUCCESS":     "succeeded",
+			"SUCCEEDED":   "succeeded",
+			"COMPLETED":   "succeeded",
+			"FAILED":      "failed",
+			"FAILURE":     "failed",
+			"ERROR":       "failed",
+			"queued":      "pending",
+			"in_progress": "running",
+			"completed":   "succeeded",
+			"failed":      "failed",
 		}
 	}
 	if c.ResultListPath == "" {

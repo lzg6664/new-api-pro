@@ -651,6 +651,8 @@ func handlerMultiKeyUpdate(channel *Channel, usingKey string, status int, reason
 			info["status_reason"] = "All keys are disabled"
 			info["status_time"] = common.GetTimestamp()
 			channel.SetOtherInfo(info)
+		} else if status == common.ChannelStatusEnabled {
+			channel.Status = common.ChannelStatusEnabled
 		}
 	}
 }
@@ -665,14 +667,16 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 			return false
 		}
 		if channelCache.ChannelInfo.IsMultiKey {
+			beforeStatus := channelCache.Status
 			// Use per-channel lock to prevent concurrent map read/write with GetNextEnabledKey
 			pollingLock := GetChannelPollingLock(channelId)
 			pollingLock.Lock()
 			// 如果是多Key模式，更新缓存中的状态
 			handlerMultiKeyUpdate(channelCache, usingKey, status, reason)
 			pollingLock.Unlock()
-			//CacheUpdateChannel(channelCache)
-			//return true
+			if beforeStatus != channelCache.Status {
+				CacheUpdateChannel(channelCache)
+			}
 		} else {
 			// 如果缓存渠道存在，且状态已是目标状态，直接返回
 			if channelCache.Status == status {

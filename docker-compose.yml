@@ -42,6 +42,7 @@ services:
       - TZ=Asia/Shanghai
       - ERROR_LOG_ENABLED=true
       - BATCH_UPDATE_ENABLED=true
+      - MAX_REQUEST_BODY_MB=1024
       - NODE_NAME=new-api-node-1
     #  - SESSION_SECRET=random_string  # 多机部署时必须设置
     #  - STREAMING_TIMEOUT=300         # 流模式超时(秒), 默认120

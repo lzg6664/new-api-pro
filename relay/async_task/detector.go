@@ -2,6 +2,7 @@ package async_task
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/QuantumNous/new-api/dto"
 )
@@ -16,6 +17,9 @@ func TryDetectAsyncTask(body []byte, config *dto.ChannelAsyncTaskConfig) (taskID
 
 	// 用路径提取 taskId
 	taskID = extractByPath(body, config.TaskIDPath)
+	if taskID == "" && looksLikeAsyncTaskResponse(body, config) {
+		taskID = firstPathValue(body, []string{"id", "task_id", "taskId", "data.id", "data.task_id", "data.taskId"})
+	}
 	if taskID == "" {
 		return "", nil
 	}
@@ -23,13 +27,51 @@ func TryDetectAsyncTask(body []byte, config *dto.ChannelAsyncTaskConfig) (taskID
 	// 可选：验证提交是否成功（状态值在成功列表中）
 	if len(config.SuccessStatuses) > 0 && config.StatusPath != "" {
 		status := extractByPath(body, config.StatusPath)
-		if status != "" && !slices.Contains(config.SuccessStatuses, status) {
+		if status != "" && !containsStringFold(config.SuccessStatuses, status) {
 			// 状态不在成功列表中 → 可能是个错误响应，不是有效的任务提交
 			return "", nil
 		}
 	}
 
 	return taskID, body
+}
+
+func looksLikeAsyncTaskResponse(body []byte, config *dto.ChannelAsyncTaskConfig) bool {
+	if extractByPath(body, "object") == "generation.task" {
+		return true
+	}
+	status := extractByPath(body, config.StatusPath)
+	if status == "" {
+		status = extractByPath(body, "status")
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "queued", "in_progress", "running", "pending", "processing", "submitted", "completed", "success", "succeeded", "failed", "failure", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstPathValue(body []byte, paths []string) string {
+	for _, path := range paths {
+		if value := strings.TrimSpace(extractByPath(body, path)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func containsStringFold(values []string, target string) bool {
+	if slices.Contains(values, target) {
+		return true
+	}
+	target = strings.TrimSpace(target)
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), target) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExtractTaskError 从响应中提取错误信息（如果有）
