@@ -208,7 +208,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 }
 
 func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
 	defer service.CloseResponseBodyGracefully(resp)
+	if info == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("relay info is nil"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
 
 	var simpleResponse dto.OpenAITextResponse
 	responseBody, err := io.ReadAll(resp.Body)
@@ -613,7 +619,13 @@ func preConsumeUsage(ctx *gin.Context, info *relaycommon.RelayInfo, usage *dto.R
 }
 
 func OpenaiHandlerWithUsage(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+	if resp == nil || resp.Body == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("invalid response"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
 	defer service.CloseResponseBodyGracefully(resp)
+	if info == nil {
+		return nil, types.NewOpenAIError(fmt.Errorf("relay info is nil"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
+	}
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {

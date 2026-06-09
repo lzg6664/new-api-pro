@@ -482,6 +482,231 @@ func TestApplyParamOverrideSet(t *testing.T) {
 	assertJSONEqual(t, `{"model":"gpt-4","temperature":0.1}`, string(out))
 }
 
+func TestApplyParamOverrideMapParamAliasDeletesSources(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","aspect_ratio":"square","size":"1920x1080","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"aspectRatio", "aspect_ratio", "ratio", "size"},
+					"map": map[string]interface{}{
+						"1:1":      "1:1",
+						"16:9":     "16:9",
+						"square":   "1:1",
+						"portrait": "9:16",
+					},
+					"normalize":      true,
+					"delete_sources": true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","aspectRatio":"1:1"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamPixelRatioSquare(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","size":"1024x1024","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"aspectRatio", "aspect_ratio", "ratio", "size"},
+					"map": map[string]interface{}{
+						"1:1":  "1:1",
+						"16:9": "16:9",
+						"9:16": "9:16",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","aspectRatio":"1:1"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamPixelRatioLandscape(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","size":"1920x1080","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"size"},
+					"map": map[string]interface{}{
+						"16:9": "16:9",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","aspectRatio":"16:9"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamPixelRatioBeforeRawMapping(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","size":"1024x768","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": "size",
+					"map": map[string]interface{}{
+						"4:3":      "4:3",
+						"1024x768": "raw-size",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","aspectRatio":"4:3"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamNormalizeResolution(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","resolution":"1K","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "resolution",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"resolution"},
+					"map": map[string]interface{}{
+						"1k": "1k",
+						"2k": "2k",
+						"4k": "4k",
+					},
+					"normalize":      true,
+					"delete_sources": true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","resolution":"1k"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamKeepOrigin(t *testing.T) {
+	input := []byte(`{"aspectRatio":"4:3","size":"1024x1024","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"size"},
+					"map": map[string]interface{}{
+						"1:1": "1:1",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+					"keep_origin":       true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"aspectRatio":"4:3","size":"1024x1024","prompt":"draw"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamConditionsSkip(t *testing.T) {
+	input := []byte(`{"model":"other/banana-pro","size":"1024x1024","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"size"},
+					"map": map[string]interface{}{
+						"1:1": "1:1",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+				},
+				"conditions": []interface{}{
+					map[string]interface{}{
+						"path":  "model",
+						"mode":  "prefix",
+						"value": "gettoken/",
+					},
+				},
+				"logic": "AND",
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"other/banana-pro","size":"1024x1024","prompt":"draw"}`, string(out))
+}
+
+func TestApplyParamOverrideMapParamUnmatchedNoop(t *testing.T) {
+	input := []byte(`{"model":"gettoken/banana-pro","size":"777x555","prompt":"draw"}`)
+	override := map[string]interface{}{
+		"operations": []interface{}{
+			map[string]interface{}{
+				"mode": "map_param",
+				"to":   "aspectRatio",
+				"value": map[string]interface{}{
+					"sources": []interface{}{"size"},
+					"map": map[string]interface{}{
+						"1:1": "1:1",
+					},
+					"parse_pixel_ratio": true,
+					"delete_sources":    true,
+				},
+			},
+		},
+	}
+
+	out, err := ApplyParamOverride(input, override, nil)
+	if err != nil {
+		t.Fatalf("ApplyParamOverride returned error: %v", err)
+	}
+	assertJSONEqual(t, `{"model":"gettoken/banana-pro","size":"777x555","prompt":"draw"}`, string(out))
+}
+
 func TestApplyParamOverrideSetWithDescriptionKeepsCompatibility(t *testing.T) {
 	input := []byte(`{"model":"gpt-4","temperature":0.7}`)
 	overrideWithoutDesc := map[string]interface{}{

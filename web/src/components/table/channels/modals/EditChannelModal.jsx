@@ -149,7 +149,180 @@ const PARAM_OVERRIDE_OPERATIONS_TEMPLATE = {
   ],
 };
 
+const HEADER_OVERRIDE_AI_GUIDE_EXAMPLE = {
+  Authorization: 'Bearer {api_key}',
+  'X-Request-Id': '{client_header:X-Request-Id}',
+  're:^X-Trace-.*$': '',
+};
+
+const RESPONSE_OVERRIDE_AI_GUIDE_EXAMPLE = {
+  operations: [
+    {
+      path: 'metadata.relay',
+      mode: 'set',
+      value: 'gateway',
+      keep_origin: true,
+    },
+  ],
+};
+
+const ASYNC_TASK_AI_GUIDE_EXAMPLE = {
+  enabled: true,
+  sync_mode: false,
+  task_id_path: 'data.task_id',
+  status_path: 'data.status',
+  error_code_path: 'error.code',
+  error_msg_path: 'error.message',
+  success_statuses: ['queued', 'running'],
+  query_method: 'POST',
+  query_path: '/v1/tasks/${task_id}',
+  query_body: {
+    task_id: '${task_id}',
+  },
+  status_map: {
+    queued: 'pending',
+    running: 'running',
+    succeeded: 'succeeded',
+    failed: 'failed',
+  },
+  result_list_path: 'data.results',
+  result_url_path: 'url',
+  result_type_path: 'type',
+  output_type: 'image',
+  poll_interval_sec: 5,
+  max_poll_attempts: 120,
+};
+
 const DEPRECATED_DOUBAO_CODING_PLAN_BASE_URL = 'doubao-coding-plan';
+
+const AI_GUIDE_CONFIGS = {
+  param_override: {
+    title: '参数覆盖 AI 说明',
+    fieldLabel: '请求参数覆盖 param_override',
+    guide: [
+      '格式: {"operations":[Operation, ...]}',
+      'Operation.description: 可选, 规则说明。',
+      'Operation.mode: 操作类型。set 设置字段; delete 删除字段; copy 复制字段; move 移动字段; append/prepend 追加值; replace/regex_replace 替换字符串; trim_space/to_lower/to_upper 处理字符串; return_error 返回自定义错误; prune_objects 清理对象项; map_param 参数映射。',
+      'Operation.path: 目标 JSON 路径, 如 temperature、messages.0.content。',
+      'Operation.from: 来源 JSON 路径, 用于 copy、move、replace、regex_replace。',
+      'Operation.to: 目标 JSON 路径, 用于 copy、move、map_param。',
+      'Operation.value: 写入值、替换规则、错误对象、清理规则或 map_param 映射配置。',
+      'Operation.keep_origin: true 时目标字段已存在则不覆盖。',
+      'Operation.conditions: 可选条件数组, 条件满足时才执行当前操作。',
+      'Operation.logic: conditions 的组合方式, AND 或 OR。',
+      'Condition.path: 条件判断的 JSON 路径。',
+      'Condition.mode: 条件类型, full/prefix/suffix/contains/gt/gte/lt/lte。',
+      'Condition.value: 条件匹配值。',
+      'Condition.invert: true 时反向匹配。',
+      'Condition.pass_missing_key: true 时字段不存在也视为通过。',
+      'map_param.value.sources: 来源字段列表, 按顺序读取第一个存在且非空的值。',
+      'map_param.value.map: 原始值到上游值的映射表。',
+      'map_param.value.normalize: true 时忽略大小写、空格、下划线、短横线差异。',
+      'map_param.value.parse_pixel_ratio: true 时把 1024x768 这类像素尺寸约分为 4:3 后再匹配。',
+      'map_param.value.delete_sources: true 时删除已消费的来源字段。',
+      'map_param.value.keep_origin: true 时目标字段已存在则不覆盖。',
+    ].join('\n'),
+    example: JSON.stringify(PARAM_OVERRIDE_OPERATIONS_TEMPLATE, null, 2),
+  },
+  header_override: {
+    title: '请求头覆盖 AI 说明',
+    fieldLabel: '请求头覆盖 header_override',
+    guide: [
+      '格式: {"Header-Name":"HeaderValue", "Header-Name":true, "*":true, "re:^X-.*$":true}',
+      'Header-Name: 要写入或透传的上游请求头名称。',
+      '字符串值: 设置固定请求头值。',
+      'true: 从调用方请求中透传同名请求头。',
+      '*: 透传允许范围内的调用方请求头。',
+      're: 开头的键: 按正则匹配并透传调用方请求头。',
+      '{api_key}: 当前渠道密钥变量。',
+      '{client_header:Header-Name}: 读取调用方指定请求头的变量。',
+    ].join('\n'),
+    example: JSON.stringify(HEADER_OVERRIDE_AI_GUIDE_EXAMPLE, null, 2),
+  },
+  response_override: {
+    title: '响应转化器 AI 说明',
+    fieldLabel: '响应转化器 response_override',
+    guide: [
+      '格式: {"operations":[Operation, ...]}',
+      'Operation.description: 可选, 规则说明。',
+      'Operation.mode: 操作类型。set 设置字段; delete 删除字段; copy 复制字段; move 移动字段; append/prepend 追加值; replace/regex_replace 替换字符串; trim_space/to_lower/to_upper 处理字符串; prune_objects 清理对象项。',
+      'Operation.path: 目标响应 JSON 路径。',
+      'Operation.from: 来源响应 JSON 路径。',
+      'Operation.to: 目标响应 JSON 路径。',
+      'Operation.value: 写入值、替换值或清理规则。',
+      'Operation.keep_origin: true 时目标字段已存在则不覆盖。',
+      'Operation.conditions: 可选条件数组, 条件满足时才执行当前操作。',
+      'Operation.logic: conditions 的组合方式, AND 或 OR。',
+    ].join('\n'),
+    example: JSON.stringify(RESPONSE_OVERRIDE_AI_GUIDE_EXAMPLE, null, 2),
+  },
+  status_code_mapping: {
+    title: '状态码复写 AI 说明',
+    fieldLabel: '状态码复写 status_code_mapping',
+    guide: [
+      '格式: {"原始状态码":"复写状态码"}',
+      '原始状态码: 上游返回的 HTTP 状态码。',
+      '复写状态码: 本地判断时使用的状态码。',
+      '作用范围: 影响本地重试、禁用、错误判断等逻辑。',
+      '返回行为: 不修改真实返回给客户端的响应状态码。',
+    ].join('\n'),
+    example: JSON.stringify(STATUS_CODE_MAPPING_EXAMPLE, null, 2),
+  },
+  rest_routes: {
+    title: '动态 REST 路由 AI 说明',
+    fieldLabel: '动态 REST 路由 rest_routes',
+    guide: [
+      '格式: [Route, ...]',
+      'Route.name: 路由名称。',
+      'Route.enabled: 是否启用当前路由。',
+      'Route.priority: 路由优先级, 数值越大越优先。',
+      'Route.match: 匹配条件对象。',
+      'Route.match.request_path: 完整请求路径匹配。',
+      'Route.match.request_path_prefix: 请求路径前缀匹配。',
+      'Route.match.method: 请求方法, 如 GET、POST。',
+      'Route.match.relay_mode: 中继模式匹配。',
+      'Route.match.model_prefix: 请求模型名前缀匹配。',
+      'Route.target: 上游目标对象。',
+      'Route.target.method: 改写后的上游请求方法。',
+      'Route.target.path: 改写后的上游请求路径。',
+      'Route.target.query: 追加或改写的查询参数对象。',
+      'path 变量 {model}: 当前上游模型名。',
+      'path 变量 {original_model}: 调用方原始模型名。',
+      'path 变量 {request_path}: 调用方原始请求路径。',
+      'path 变量 {request_method}: 调用方原始请求方法。',
+    ].join('\n'),
+    example: JSON.stringify(REST_ROUTE_TEMPLATE, null, 2),
+  },
+  async_task: {
+    title: '异步任务配置 AI 说明',
+    fieldLabel: '异步任务配置 async_task',
+    guide: [
+      '格式: {"enabled":true, ...}',
+      'enabled: 是否启用异步任务模式。',
+      'task_id_path: 提交任务响应里的任务 ID 字段路径。',
+      'status_path: 查询响应里的任务状态字段路径。',
+      'error_code_path: 查询响应里的错误码字段路径。',
+      'error_msg_path: 查询响应里的错误信息字段路径。',
+      'success_statuses: 仍需继续轮询的中间状态数组。',
+      'query_method: 查询任务结果的 HTTP 方法, GET 或 POST。',
+      'query_path: 查询任务结果的接口路径。',
+      'query_body: 查询任务结果的请求体模板, ${task_id} 表示提交接口返回的任务 ID。',
+      'status_map: 上游状态到本地状态的映射, 本地状态为 pending/running/succeeded/failed。',
+      'result_list_path: 最终响应里的结果列表字段路径。',
+      'result_url_path: 单个结果对象里的文件 URL 字段路径。',
+      'result_type_path: 单个结果对象里的输出类型字段路径。',
+      'output_type: 默认输出类型, 如 image、video、audio、text。',
+      'poll_interval_sec: 轮询间隔秒数。',
+      'max_poll_attempts: 最大轮询次数。',
+    ].join('\n'),
+    example: JSON.stringify(ASYNC_TASK_AI_GUIDE_EXAMPLE, null, 2),
+  },
+};
+
+const buildAiGuidePrompt = (guideKey) => {
+  const config = AI_GUIDE_CONFIGS[guideKey] || AI_GUIDE_CONFIGS.param_override;
+  return `${config.fieldLabel}\n\n${config.guide}\n\n示例:\n${config.example}`;
+};
 
 // 支持并且已适配通过接口获取模型列表的渠道类型
 const MODEL_FETCHABLE_TYPES = new Set([
@@ -211,8 +384,6 @@ const EditChannelModal = (props) => {
     priority: 0,
     weight: 0,
     tag: '',
-    multi_key_mode: 'random',
-    selection_mode: 'weighted_random',
     // 渠道额外设置的默认值
     force_format: false,
     thinking_to_content: false,
@@ -243,7 +414,6 @@ const EditChannelModal = (props) => {
   };
   const [batch, setBatch] = useState(false);
   const [multiToSingle, setMultiToSingle] = useState(false);
-  const [multiKeyMode, setMultiKeyMode] = useState('random');
   const [autoBan, setAutoBan] = useState(true);
   const [inputs, setInputs] = useState(originInputs);
   const [originModelOptions, setOriginModelOptions] = useState([]);
@@ -268,6 +438,7 @@ const EditChannelModal = (props) => {
   const [ollamaModalVisible, setOllamaModalVisible] = useState(false);
   const [requestPreviewVisible, setRequestPreviewVisible] = useState(false);
   const formApiRef = useRef(null);
+  const [formReady, setFormReady] = useState(false);
   const [vertexKeys, setVertexKeys] = useState([]);
   const [vertexFileList, setVertexFileList] = useState([]);
   const vertexErroredNames = useRef(new Set()); // 避免重复报错
@@ -471,6 +642,36 @@ const EditChannelModal = (props) => {
 
   const [responseOverrideEditorVisible, setResponseOverrideEditorVisible] =
     useState(false);
+  const [aiGuideVisible, setAiGuideVisible] = useState(false);
+  const [aiGuideKey, setAiGuideKey] = useState('param_override');
+  const aiGuideConfig =
+    AI_GUIDE_CONFIGS[aiGuideKey] || AI_GUIDE_CONFIGS.param_override;
+  const aiGuidePrompt = useMemo(
+    () => buildAiGuidePrompt(aiGuideKey),
+    [aiGuideKey],
+  );
+  const openAiGuide = (key) => {
+    setAiGuideKey(key);
+    setAiGuideVisible(true);
+  };
+  const copyAiGuidePrompt = async () => {
+    const ok = await copy(aiGuidePrompt);
+    if (ok) {
+      showSuccess(t('AI 说明已复制'));
+    } else {
+      showError(t('复制失败'));
+    }
+  };
+  const renderAiGuideButton = (key) => (
+    <Button
+      size='small'
+      type='tertiary'
+      icon={<IconBolt size={14} />}
+      onClick={() => openAiGuide(key)}
+    >
+      {t('AI 说明')}
+    </Button>
+  );
 
   // 密钥显示状态
   const [keyDisplayState, setKeyDisplayState] = useState({
@@ -608,6 +809,7 @@ const EditChannelModal = (props) => {
   // 异步任务配置空值（新建渠道时使用，默认值由后端 Defaults() 管理）
   const emptyAsyncTaskConfig = {
     enabled: false,
+    sync_mode: false,
     task_id_path: '',
     status_path: '',
     error_code_path: '',
@@ -641,6 +843,7 @@ const EditChannelModal = (props) => {
       }
       return {
         enabled: at.enabled === true,
+        sync_mode: at.sync_mode === true,
         task_id_path: at.task_id_path || '',
         status_path: at.status_path || '',
         error_code_path: at.error_code_path || '',
@@ -702,6 +905,7 @@ const EditChannelModal = (props) => {
   const showApiConfigCard = true; // 控制是否显示 API 配置卡片
   const getAsyncTaskFormValues = (config = asyncTaskConfig) => ({
     async_task_enabled: config.enabled,
+    async_task_sync_mode: config.sync_mode,
     async_task_task_id_path: config.task_id_path,
     async_task_status_path: config.status_path,
     async_task_error_code_path: config.error_code_path,
@@ -805,6 +1009,114 @@ const EditChannelModal = (props) => {
       .join('\n');
   };
 
+  const asyncTaskConfigKeys = [
+    'enabled',
+    'sync_mode',
+    'task_id_path',
+    'status_path',
+    'error_code_path',
+    'error_msg_path',
+    'success_statuses',
+    'query_method',
+    'query_path',
+    'query_body',
+    'status_map',
+    'result_list_path',
+    'result_url_path',
+    'result_type_path',
+    'output_type',
+    'poll_interval_sec',
+    'max_poll_attempts',
+  ];
+  const asyncTaskImportSignatureKeys = asyncTaskConfigKeys.filter(
+    (key) => key !== 'enabled',
+  );
+  const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+  const isPlainObject = (value) =>
+    value && typeof value === 'object' && !Array.isArray(value);
+
+  const getImportedAsyncTaskConfigObject = (data) => {
+    if (!isPlainObject(data)) {
+      return null;
+    }
+    const fromSettings = isPlainObject(data.async_task);
+    const candidate = fromSettings ? data.async_task : data;
+    const signatureKeys = fromSettings
+      ? asyncTaskConfigKeys
+      : asyncTaskImportSignatureKeys;
+    const hasConfigShape = signatureKeys.some((key) => hasOwn(candidate, key));
+    return hasConfigShape ? candidate : null;
+  };
+
+  const normalizeImportedAsyncTaskConfig = (rawConfig) => {
+    const normalized = {};
+    const pickString = (key) => {
+      if (hasOwn(rawConfig, key)) {
+        normalized[key] =
+          rawConfig[key] === null || rawConfig[key] === undefined
+            ? ''
+            : String(rawConfig[key]);
+      }
+    };
+    const pickNumber = (key) => {
+      if (hasOwn(rawConfig, key)) {
+        const value = parseInt(rawConfig[key], 10);
+        normalized[key] = Number.isFinite(value) ? value : undefined;
+      }
+    };
+
+    if (hasOwn(rawConfig, 'enabled')) {
+      normalized.enabled = rawConfig.enabled === true;
+    }
+    if (hasOwn(rawConfig, 'sync_mode')) {
+      normalized.sync_mode = rawConfig.sync_mode === true;
+    }
+    [
+      'task_id_path',
+      'status_path',
+      'error_code_path',
+      'error_msg_path',
+      'query_path',
+      'result_list_path',
+      'result_url_path',
+      'result_type_path',
+      'output_type',
+    ].forEach(pickString);
+    if (hasOwn(rawConfig, 'query_method')) {
+      normalized.query_method = String(rawConfig.query_method || '').toUpperCase();
+    }
+    if (hasOwn(rawConfig, 'success_statuses')) {
+      normalized.success_statuses = Array.isArray(rawConfig.success_statuses)
+        ? rawConfig.success_statuses.map((item) => String(item)).filter(Boolean)
+        : String(rawConfig.success_statuses || '')
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean);
+    }
+    if (hasOwn(rawConfig, 'query_body')) {
+      if (typeof rawConfig.query_body === 'string') {
+        normalized.query_body = rawConfig.query_body;
+      } else if (
+        rawConfig.query_body === null ||
+        rawConfig.query_body === undefined
+      ) {
+        normalized.query_body = '';
+      } else {
+        normalized.query_body = JSON.stringify(rawConfig.query_body, null, 2);
+      }
+    }
+    if (hasOwn(rawConfig, 'status_map')) {
+      normalized.status_map =
+        typeof rawConfig.status_map === 'string'
+          ? rawConfig.status_map
+          : parseStatusMapToString(rawConfig.status_map);
+    }
+    pickNumber('poll_interval_sec');
+    pickNumber('max_poll_attempts');
+
+    return normalized;
+  };
+
   // 处理异步任务配置更新
   const parseSettingsObject = (rawSettings) => {
     if (typeof rawSettings !== 'string' || rawSettings.trim() === '') {
@@ -835,6 +1147,36 @@ const EditChannelModal = (props) => {
     status_map: parseStatusMapToObject(config.status_map),
   });
 
+  const buildAsyncTaskSaveConfig = (config) => ({
+    enabled: config.enabled === true,
+    sync_mode: config.sync_mode === true,
+    task_id_path: config.task_id_path || 'taskId',
+    status_path: config.status_path || 'status',
+    error_code_path: config.error_code_path || '',
+    error_msg_path: config.error_msg_path || '',
+    success_statuses: Array.isArray(config.success_statuses)
+      ? config.success_statuses
+      : ['RUNNING', 'QUEUED'],
+    query_method: config.query_method || 'POST',
+    query_path: config.query_path || '',
+    query_body: config.query_body
+      ? (() => {
+          try {
+            return JSON.parse(config.query_body);
+          } catch (e) {
+            return {};
+          }
+        })()
+      : {},
+    status_map: parseStatusMapToObject(config.status_map),
+    result_list_path: config.result_list_path || 'results',
+    result_url_path: config.result_url_path || 'url',
+    result_type_path: config.result_type_path || 'outputType',
+    output_type: config.output_type || 'image',
+    poll_interval_sec: parseInt(config.poll_interval_sec) || 5,
+    max_poll_attempts: parseInt(config.max_poll_attempts) || 120,
+  });
+
   const updateAsyncTaskConfigState = (updater) => {
     skipNextFormSyncRef.current = true;
     setInputs((prevInputs) => {
@@ -861,6 +1203,20 @@ const EditChannelModal = (props) => {
     }));
   };
 
+  const copyAsyncTaskConfigJson = async () => {
+    const content = JSON.stringify(
+      buildAsyncTaskSaveConfig(asyncTaskConfig),
+      null,
+      2,
+    );
+    const ok = await copy(content);
+    if (ok) {
+      showSuccess(t('已复制到剪贴板'));
+    } else {
+      showError(t('复制失败'));
+    }
+  };
+
   // 从 JSON 示例自动分析异步任务配置
   const analyzeAsyncTaskJson = (jsonStr) => {
     let data;
@@ -871,6 +1227,11 @@ const EditChannelModal = (props) => {
     }
     if (typeof data !== 'object' || data === null || Array.isArray(data)) {
       throw new Error('需要 JSON 对象，不是数组');
+    }
+
+    const importedConfig = getImportedAsyncTaskConfigObject(data);
+    if (importedConfig) {
+      return normalizeImportedAsyncTaskConfig(importedConfig);
     }
 
     // 递归收集所有路径及其值
@@ -1199,7 +1560,6 @@ const EditChannelModal = (props) => {
       if (value === 57) {
         setBatch(false);
         setMultiToSingle(false);
-        setMultiKeyMode('random');
         setVertexKeys([]);
         setVertexFileList([]);
         if (formApiRef.current) {
@@ -1459,15 +1819,10 @@ const EditChannelModal = (props) => {
       if (isMulti) {
         setBatch(true);
         setMultiToSingle(true);
-        const modeVal = chInfo.multi_key_mode || 'random';
-        setMultiKeyMode(modeVal);
-        data.multi_key_mode = modeVal;
       } else {
         setBatch(false);
         setMultiToSingle(false);
       }
-      const selectionMode = chInfo.selection_mode || 'weighted_random';
-      data.selection_mode = selectionMode;
       let hasAsyncTaskSettings = false;
       let nextAsyncTaskConfig = readAsyncTaskConfigFromSettings(data.settings);
       // 解析渠道额外设置并合并到data中
@@ -1612,7 +1967,7 @@ const EditChannelModal = (props) => {
         data.upstream_model_update_last_detected_models = [];
         data.upstream_model_update_ignored_models = '';
         data.rest_routes = '';
-        nextAsyncTaskConfig = defaultAsyncTaskConfig;
+        nextAsyncTaskConfig = emptyAsyncTaskConfig;
       }
 
       if (
@@ -1624,14 +1979,7 @@ const EditChannelModal = (props) => {
       }
 
       initialBaseUrlRef.current = data.base_url || '';
-      skipNextFormSyncRef.current = true;
       setInputs(data);
-      if (formApiRef.current) {
-        formApiRef.current.setValues({
-          ...data,
-          ...getAsyncTaskFormValues(nextAsyncTaskConfig),
-        });
-      }
       if (data.auto_ban === 0) {
         setAutoBan(false);
       } else {
@@ -1988,7 +2336,7 @@ const EditChannelModal = (props) => {
         ...getAsyncTaskFormValues(asyncTaskConfig),
       });
     }
-  }, [asyncTaskConfig, inputs]);
+  }, [asyncTaskConfig, inputs, formReady]);
 
   useEffect(() => {
     setModelSearchValue('');
@@ -2541,32 +2889,7 @@ const EditChannelModal = (props) => {
     }
 
     // 异步任务配置
-    settings.async_task = {
-      enabled: asyncTaskConfig.enabled === true,
-      task_id_path: asyncTaskConfig.task_id_path || 'taskId',
-      status_path: asyncTaskConfig.status_path || 'status',
-      error_code_path: asyncTaskConfig.error_code_path || '',
-      error_msg_path: asyncTaskConfig.error_msg_path || '',
-      success_statuses: Array.isArray(asyncTaskConfig.success_statuses) ? asyncTaskConfig.success_statuses : ['RUNNING', 'QUEUED'],
-      query_method: asyncTaskConfig.query_method || 'POST',
-      query_path: asyncTaskConfig.query_path || '',
-      query_body: asyncTaskConfig.query_body
-        ? (() => {
-            try {
-              return JSON.parse(asyncTaskConfig.query_body);
-            } catch (e) {
-              return {};
-            }
-          })()
-        : {},
-      status_map: parseStatusMapToObject(asyncTaskConfig.status_map),
-      result_list_path: asyncTaskConfig.result_list_path || 'results',
-      result_url_path: asyncTaskConfig.result_url_path || 'url',
-      result_type_path: asyncTaskConfig.result_type_path || 'outputType',
-      output_type: asyncTaskConfig.output_type || 'image',
-      poll_interval_sec: parseInt(asyncTaskConfig.poll_interval_sec) || 5,
-      max_poll_attempts: parseInt(asyncTaskConfig.max_poll_attempts) || 120,
-    };
+    settings.async_task = buildAsyncTaskSaveConfig(asyncTaskConfig);
 
     localInputs.settings = JSON.stringify(settings);
 
@@ -2617,8 +2940,6 @@ const EditChannelModal = (props) => {
     } else {
       res = await API.post(`/api/channel/`, {
         mode: mode,
-        multi_key_mode: mode === 'multi_to_single' ? multiKeyMode : undefined,
-        selection_mode: localInputs.selection_mode || 'weighted_random',
         channel: localInputs,
       });
     }
@@ -2751,7 +3072,6 @@ const EditChannelModal = (props) => {
 
                   setBatch(false);
                   setMultiToSingle(false);
-                  setMultiKeyMode('random');
                 },
                 onCancel: () => {
                   setBatch(true);
@@ -2764,7 +3084,6 @@ const EditChannelModal = (props) => {
             setBatch(checked);
             if (!checked) {
               setMultiToSingle(false);
-              setMultiKeyMode('random');
             } else {
               // 批量模式下禁用手动输入，并清空手动输入的内容
               setUseManualInput(false);
@@ -2787,19 +3106,7 @@ const EditChannelModal = (props) => {
             disabled={isEdit}
             checked={multiToSingle}
             onChange={() => {
-              setMultiToSingle((prev) => {
-                const nextValue = !prev;
-                setInputs((prevInputs) => {
-                  const newInputs = { ...prevInputs };
-                  if (nextValue) {
-                    newInputs.multi_key_mode = multiKeyMode;
-                  } else {
-                    delete newInputs.multi_key_mode;
-                  }
-                  return newInputs;
-                });
-                return nextValue;
-              });
+              setMultiToSingle((prev) => !prev);
             }}
           >
             {t('密钥聚合模式')}
@@ -2950,7 +3257,7 @@ const EditChannelModal = (props) => {
         <Form
           key={isEdit ? 'edit' : 'new'}
           initValues={getInitFormValues()}
-          getFormApi={(api) => (formApiRef.current = api)}
+          getFormApi={(api) => { formApiRef.current = api; setFormReady(true); }}
           onSubmit={submit}
         >
           {() => {
@@ -3056,6 +3363,7 @@ const EditChannelModal = (props) => {
                     <div className='flex items-center justify-between gap-2 mb-1'>
                       <Text className='text-sm font-medium'>{t('参数覆盖')}</Text>
                       <Space>
+                        {renderAiGuideButton('param_override')}
                         <Button
                           size='small'
                           type='primary'
@@ -3139,6 +3447,7 @@ const EditChannelModal = (props) => {
                     extraText={
                       <div className='flex flex-col gap-1'>
                         <div className='flex gap-2 flex-wrap items-center'>
+                          {renderAiGuideButton('header_override')}
                           <Text
                             className='!text-semi-color-primary cursor-pointer'
                             onClick={() =>
@@ -3193,6 +3502,7 @@ const EditChannelModal = (props) => {
                         >
                           {t('可视化编辑')}
                         </Button>
+                        {renderAiGuideButton('response_override')}
                         <Dropdown
                           trigger='click'
                           position='bottomRight'
@@ -3244,6 +3554,11 @@ const EditChannelModal = (props) => {
                     editorType='keyValue'
                     formApi={formApiRef.current}
                     extraText={t('键为原状态码，值为要复写的状态码，仅影响本地判断')}
+                    extraFooter={
+                      <div className='flex justify-end'>
+                        {renderAiGuideButton('status_code_mapping')}
+                      </div>
+                    }
                   />
                   <Form.TextArea
                     field='rest_routes'
@@ -3259,6 +3574,7 @@ const EditChannelModal = (props) => {
                     extraText={
                       <div className='flex flex-col gap-1'>
                         <div className='flex gap-2 flex-wrap items-center'>
+                          {renderAiGuideButton('rest_routes')}
                           <Text
                             className='!text-semi-color-primary cursor-pointer'
                             onClick={() =>
@@ -3316,26 +3632,6 @@ const EditChannelModal = (props) => {
                     showClear
                     onChange={(value) => handleInputChange('remark', value)}
                   />
-                  <Form.Select
-                    field='selection_mode'
-                    label={t('渠道选择模式')}
-                    placeholder={t('请选择渠道选择模式')}
-                    optionList={[
-                      { label: t('加权随机'), value: 'weighted_random' },
-                      { label: t('轮询'), value: 'polling' },
-                    ]}
-                    value={inputs.selection_mode || 'weighted_random'}
-                    onChange={(value) => handleInputChange('selection_mode', value)}
-                  />
-                  {inputs.selection_mode === 'polling' && (
-                    <Banner
-                      type='warning'
-                      description={t(
-                        '轮询模式：相同优先级的渠道将按顺序轮流分配请求。必须搭配Redis和内存缓存功能使用',
-                      )}
-                      className='!rounded-lg mt-2'
-                    />
-                  )}
                   <Row gutter={12}>
                     <Col span={12}>
                       <Form.InputNumber
@@ -3418,14 +3714,25 @@ const EditChannelModal = (props) => {
                       <Text className='text-sm font-medium text-gray-500'>
                         {t('异步任务配置')}
                       </Text>
-                      <Button
-                        size='small'
-                        type='primary'
-                        icon={<IconFile size={14} />}
-                        onClick={() => setShowImportModal(true)}
-                      >
-                        {t('从JSON导入')}
-                      </Button>
+                      <Space>
+                        {renderAiGuideButton('async_task')}
+                        <Button
+                          size='small'
+                          type='tertiary'
+                          icon={<IconCopy size={14} />}
+                          onClick={copyAsyncTaskConfigJson}
+                        >
+                          {t('复制')} JSON
+                        </Button>
+                        <Button
+                          size='small'
+                          type='primary'
+                          icon={<IconFile size={14} />}
+                          onClick={() => setShowImportModal(true)}
+                        >
+                          {t('从JSON导入')}
+                        </Button>
+                      </Space>
                     </div>
 
                     <Form.Switch
@@ -3436,6 +3743,16 @@ const EditChannelModal = (props) => {
                       checked={asyncTaskConfig.enabled}
                       onChange={(value) => handleAsyncTaskConfigChange('enabled', value)}
                       extraText={t('开启后渠道将以异步轮询方式获取任务结果')}
+                    />
+
+                    <Form.Switch
+                      label={t('同步等待结果')}
+                      checkedText={t('开')}
+                      uncheckedText={t('关')}
+                      field='async_task_sync_mode'
+                      checked={asyncTaskConfig.sync_mode}
+                      onChange={(value) => handleAsyncTaskConfigChange('sync_mode', value)}
+                      extraText={t('开启后本次请求会保持等待，轮询完成后直接返回结果；关闭时先返回 taskId 并后台轮询')}
                     />
 
                     <Collapse defaultActiveKey={['asyncTaskDetail']}>
@@ -4240,35 +4557,6 @@ const EditChannelModal = (props) => {
                         }
                       />
                     )}
-                    {batch && multiToSingle && (
-                      <>
-                        <Form.Select
-                          field='multi_key_mode'
-                          label={t('密钥聚合模式')}
-                          placeholder={t('请选择多密钥使用策略')}
-                          optionList={[
-                            { label: t('随机'), value: 'random' },
-                            { label: t('轮询'), value: 'polling' },
-                          ]}
-                          style={{ width: '100%' }}
-                          value={inputs.multi_key_mode || 'random'}
-                          onChange={(value) => {
-                            setMultiKeyMode(value);
-                            handleInputChange('multi_key_mode', value);
-                          }}
-                        />
-                        {inputs.multi_key_mode === 'polling' && (
-                          <Banner
-                            type='warning'
-                            description={t(
-                              '轮询模式必须搭配Redis和内存缓存功能使用，否则性能将大幅降低，并且无法实现轮询功能',
-                            )}
-                            className='!rounded-lg mt-2'
-                          />
-                        )}
-                      </>
-                    )}
-
                     {inputs.type === 18 && (
                       <Form.Input
                         field='other'
@@ -4956,6 +5244,36 @@ const EditChannelModal = (props) => {
         />
       </Modal>
 
+      <Modal
+        title={t(aiGuideConfig.title)}
+        visible={aiGuideVisible}
+        onCancel={() => setAiGuideVisible(false)}
+        footer={
+          <Space>
+            <Button onClick={() => setAiGuideVisible(false)}>
+              {t('关闭')}
+            </Button>
+            <Button
+              type='primary'
+              icon={<IconCopy />}
+              onClick={copyAiGuidePrompt}
+            >
+              {t('复制 AI 说明')}
+            </Button>
+          </Space>
+        }
+        width={820}
+        style={{ maxWidth: '92vw' }}
+      >
+        <TextArea
+          value={aiGuidePrompt}
+          rows={18}
+          readonly
+          showClear={false}
+          style={{ fontFamily: 'monospace' }}
+        />
+      </Modal>
+
       <ParamOverrideEditorModal
         visible={paramOverrideEditorVisible}
         value={inputs.param_override || ''}
@@ -5135,27 +5453,41 @@ const EditChannelModal = (props) => {
               </Text>
               <div className='mt-3 rounded-xl p-3' style={{ backgroundColor: 'var(--semi-color-fill-0)', border: '1px solid var(--semi-color-fill-2)' }}>
                 {[
+                  { key: 'enabled', label: '启用状态' },
                   { key: 'task_id_path', label: '任务ID路径' },
+                  { key: 'sync_mode', label: '同步等待结果' },
                   { key: 'status_path', label: '状态字段路径' },
                   { key: 'error_code_path', label: '错误码路径' },
                   { key: 'error_msg_path', label: '错误消息路径' },
                   { key: 'success_statuses', label: '成功状态值' },
+                  { key: 'query_method', label: '查询方式' },
+                  { key: 'query_path', label: '查询路径' },
+                  { key: 'query_body', label: '查询请求体模板' },
                   { key: 'result_list_path', label: '结果列表路径' },
                   { key: 'result_url_path', label: '结果URL路径' },
                   { key: 'result_type_path', label: '结果类型路径' },
                   { key: 'output_type', label: '输出类型' },
+                  { key: 'poll_interval_sec', label: '轮询间隔(秒)' },
+                  { key: 'max_poll_attempts', label: '最大轮询次数' },
                   { key: 'status_map', label: '状态映射' },
                 ].map(({ key, label }) => {
                   let displayVal = importPreview[key];
                   if (Array.isArray(displayVal)) displayVal = displayVal.join(', ');
-                  if (displayVal === '') displayVal = <Text type='danger' size='small'>{t('未检测到')}</Text>;
+                  const isMissing =
+                    displayVal === '' ||
+                    displayVal === undefined ||
+                    displayVal === null;
                   return (
                     <div key={key} className='flex items-center py-1.5 border-b border-gray-50 last:border-b-0'>
                       <Text size='small' style={{ width: 120 }} type='tertiary'>
                         {label}
                       </Text>
                       <Text size='small' style={{ flex: 1, wordBreak: 'break-all' }}>
-                        {String(displayVal || '')}
+                        {isMissing ? (
+                          <Text type='danger' size='small'>{t('未检测到')}</Text>
+                        ) : (
+                          String(displayVal)
+                        )}
                       </Text>
                     </div>
                   );

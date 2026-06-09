@@ -252,6 +252,102 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	}
 }
 
+func CreateConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) (*Log, error) {
+	if !common.LogConsumeEnabled {
+		return nil, nil
+	}
+	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
+	username := ""
+	requestId := ""
+	if c != nil {
+		username = c.GetString("username")
+		requestId = c.GetString(common.RequestIdKey)
+	}
+	otherStr := common.MapToJsonStr(params.Other)
+	needRecordIp := false
+	if userId > 0 {
+		if settingMap, err := GetUserSetting(userId, false); err == nil {
+			if settingMap.RecordIpLog {
+				needRecordIp = true
+			}
+		}
+	}
+	clientIP := ""
+	if needRecordIp && c != nil {
+		clientIP = c.ClientIP()
+	}
+	log := &Log{
+		UserId:           userId,
+		Username:         username,
+		CreatedAt:        common.GetTimestamp(),
+		Type:             LogTypeConsume,
+		Content:          params.Content,
+		PromptTokens:     params.PromptTokens,
+		CompletionTokens: params.CompletionTokens,
+		TokenName:        params.TokenName,
+		ModelName:        params.ModelName,
+		Quota:            params.Quota,
+		ChannelId:        params.ChannelId,
+		TokenId:          params.TokenId,
+		UseTime:          params.UseTimeSeconds,
+		IsStream:         params.IsStream,
+		Group:            params.Group,
+		Ip:               clientIP,
+		RequestId:        requestId,
+		Other:            otherStr,
+	}
+	err := LOG_DB.Create(log).Error
+	if err != nil {
+		return nil, err
+	}
+	if common.DataExportEnabled {
+		gopool.Go(func() {
+			LogQuotaData(userId, username, params.ModelName, params.Quota, common.GetTimestamp(), params.PromptTokens+params.CompletionTokens)
+		})
+	}
+	return log, nil
+}
+
+type UpdateConsumeLogParams struct {
+	Content        string                 `json:"content"`
+	UseTimeSeconds int                    `json:"use_time_seconds"`
+	Other          map[string]interface{} `json:"other"`
+}
+
+func UpdateConsumeLog(logId int, params UpdateConsumeLogParams) error {
+	if logId <= 0 || LOG_DB == nil {
+		return nil
+	}
+
+	var log Log
+	if err := LOG_DB.Where("id = ? AND type = ?", logId, LogTypeConsume).First(&log).Error; err != nil {
+		return err
+	}
+
+	other, err := common.StrToMap(log.Other)
+	if err != nil || other == nil {
+		other = make(map[string]interface{})
+	}
+	for key, value := range params.Other {
+		if value == nil {
+			delete(other, key)
+			continue
+		}
+		other[key] = value
+	}
+
+	updates := map[string]interface{}{
+		"other": common.MapToJsonStr(other),
+	}
+	if params.Content != "" {
+		updates["content"] = params.Content
+	}
+	if params.UseTimeSeconds > 0 {
+		updates["use_time"] = params.UseTimeSeconds
+	}
+	return LOG_DB.Model(&Log{}).Where("id = ? AND type = ?", logId, LogTypeConsume).Updates(updates).Error
+}
+
 type RecordTaskBillingLogParams struct {
 	UserId    int
 	LogType   int

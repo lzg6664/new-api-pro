@@ -49,7 +49,6 @@ import {
   IconMore,
   IconAlertTriangle,
 } from '@douyinfe/semi-icons';
-import { FaRandom } from 'react-icons/fa';
 
 // Render functions
 const renderType = (type, record = {}, t) => {
@@ -63,18 +62,12 @@ const renderType = (type, record = {}, t) => {
   let icon = getChannelIcon(type);
 
   if (channelInfo?.is_multi_key) {
-    icon =
-      channelInfo?.multi_key_mode === 'random' ? (
-        <div className='flex items-center gap-1'>
-          <FaRandom className='text-blue-500' />
-          {icon}
-        </div>
-      ) : (
-        <div className='flex items-center gap-1'>
-          <IconTreeTriangleDown className='text-blue-500' />
-          {icon}
-        </div>
-      );
+    icon = (
+      <div className='flex items-center gap-1'>
+        <IconTreeTriangleDown className='text-blue-500' />
+        {icon}
+      </div>
+    );
   }
 
   const typeTag = (
@@ -327,6 +320,7 @@ export const getChannelsColumns = ({
   setCurrentMultiKeyChannel,
   openUpstreamUpdateModal,
   detectChannelUpstreamUpdates,
+  featuresMap,
 }) => {
   return [
     {
@@ -680,6 +674,55 @@ export const getChannelsColumns = ({
             />
           );
         }
+      },
+    },
+    {
+      key: COLUMN_KEYS.FEATURES,
+      title: t('功能'),
+      dataIndex: 'features',
+      width: 150,
+      render: (text, record, index) => {
+        if (record.children !== undefined) return null;
+        const feat = featuresMap[record.id];
+        if (!feat) return null;
+        const tags = [];
+        if (feat.async_task) {
+          tags.push(
+            <Tag key='async' color='blue' size='small' shape='circle' type='light'>
+              async
+            </Tag>
+          );
+        }
+        if (feat.rest_routes > 0) {
+          tags.push(
+            <Tag key='routes' color='green' size='small' shape='circle' type='light'>
+              routes x{feat.rest_routes}
+            </Tag>
+          );
+        }
+        if (feat.thinking_to_content) {
+          tags.push(
+            <Tag key='think' color='purple' size='small' shape='circle' type='light'>
+              think
+            </Tag>
+          );
+        }
+        if (feat.force_format) {
+          tags.push(
+            <Tag key='fmt' color='orange' size='small' shape='circle' type='light'>
+              fmt
+            </Tag>
+          );
+        }
+        if (feat.img_prefix_count > 0) {
+          tags.push(
+            <Tag key='img' color='cyan' size='small' shape='circle' type='light'>
+              img x{feat.img_prefix_count}
+            </Tag>
+          );
+        }
+        if (tags.length === 0) return null;
+        return <Space spacing={2}>{tags}</Space>;
       },
     },
     {

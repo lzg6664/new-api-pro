@@ -19,6 +19,7 @@ import (
 )
 
 var negativeIndexRegexp = regexp.MustCompile(`\.(-\d+)`)
+var pixelSizeRegexp = regexp.MustCompile(`^\s*(\d+)\s*[xX*]\s*(\d+)\s*$`)
 
 const (
 	paramOverrideContextRequestHeaders = "request_headers"
@@ -51,7 +52,7 @@ type ConditionOperation struct {
 
 type ParamOperation struct {
 	Path       string               `json:"path"`
-	Mode       string               `json:"mode"` // delete, set, move, copy, prepend, append, trim_prefix, trim_suffix, ensure_prefix, ensure_suffix, trim_space, to_lower, to_upper, replace, regex_replace, return_error, prune_objects, set_header, delete_header, copy_header, move_header, pass_headers, sync_fields
+	Mode       string               `json:"mode"` // delete, set, move, copy, prepend, append, trim_prefix, trim_suffix, ensure_prefix, ensure_suffix, trim_space, to_lower, to_upper, replace, regex_replace, return_error, prune_objects, map_param, set_header, delete_header, copy_header, move_header, pass_headers, sync_fields
 	Value      interface{}          `json:"value"`
 	KeepOrigin bool                 `json:"keep_origin"`
 	From       string               `json:"from,omitempty"`
@@ -368,6 +369,11 @@ func buildParamOverrideAuditLine(mode, path, from, to string, value interface{})
 			return ""
 		}
 		return fmt.Sprintf("transform_media %s -> %s %s", from, to, formatParamOverrideAuditValue(value))
+	case "map_param":
+		if path == "" {
+			return ""
+		}
+		return fmt.Sprintf("map_param %s %s", path, formatParamOverrideAuditValue(value))
 	case "return_error":
 		return fmt.Sprintf("return_error %s", formatParamOverrideAuditValue(value))
 	default:
@@ -924,6 +930,12 @@ func applyOperations(jsonStr string, operations []ParamOperation, conditionConte
 			if err == nil {
 				auditRecorder.recordOperation("transform_media", "", op.From, op.To, op.Value)
 			}
+		case "map_param":
+			result, err = mapParamValue(result, op)
+			if err == nil {
+				targetPath := getMapParamTargetPath(op)
+				auditRecorder.recordOperation("map_param", targetPath, "", "", op.Value)
+			}
 		default:
 			return "", fmt.Errorf("unknown operation: %s", op.Mode)
 		}
@@ -932,6 +944,339 @@ func applyOperations(jsonStr string, operations []ParamOperation, conditionConte
 		}
 	}
 	return result, nil
+}
+
+type mapParamOptions struct {
+	sources         []string
+	valueMap        map[string]interface{}
+	normalizedMap   map[string]interface{}
+	normalize       bool
+	parsePixelRatio bool
+	deleteSources   bool
+	keepOrigin      bool
+}
+
+func getMapParamTargetPath(op ParamOperation) string {
+	targetPath := strings.TrimSpace(op.To)
+	if targetPath == "" {
+		targetPath = strings.TrimSpace(op.Path)
+	}
+	return targetPath
+}
+
+func mapParamValue(jsonStr string, op ParamOperation) (string, error) {
+	targetPath := getMapParamTargetPath(op)
+	if targetPath == "" {
+		return "", fmt.Errorf("map_param to/path is required")
+	}
+
+	options, err := parseMapParamOptions(op.Value, op.KeepOrigin)
+	if err != nil {
+		return "", err
+	}
+
+	targetPath = processNegativeIndex(jsonStr, targetPath)
+	if options.keepOrigin && gjson.Get(jsonStr, targetPath).Exists() {
+		return jsonStr, nil
+	}
+
+	sourcePath, sourceValue, ok := findMapParamSource(jsonStr, options.sources)
+	if !ok {
+		return jsonStr, nil
+	}
+
+	mappedValue, ok := resolveMapParamValue(sourceValue, options)
+	if !ok {
+		return jsonStr, nil
+	}
+
+	result, err := sjson.Set(jsonStr, targetPath, mappedValue)
+	if err != nil {
+		return "", err
+	}
+
+	if options.deleteSources {
+		for _, source := range options.sources {
+			path := processNegativeIndex(result, source)
+			if path == "" || path == targetPath {
+				continue
+			}
+			result, err = sjson.Delete(result, path)
+			if err != nil {
+				return "", err
+			}
+		}
+		if sourcePath != "" && sourcePath != targetPath && !lo.Contains(options.sources, sourcePath) {
+			result, err = sjson.Delete(result, sourcePath)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+
+	return result, nil
+}
+
+func parseMapParamOptions(value interface{}, topLevelKeepOrigin bool) (mapParamOptions, error) {
+	options := mapParamOptions{
+		keepOrigin: topLevelKeepOrigin,
+		valueMap:   map[string]interface{}{},
+	}
+
+	raw, ok := value.(map[string]interface{})
+	if !ok {
+		return options, fmt.Errorf("map_param value must be an object")
+	}
+
+	sourcesRaw, exists := raw["sources"]
+	if !exists {
+		sourcesRaw = raw["source"]
+	}
+	sources, err := parseMapParamStringList(sourcesRaw)
+	if err != nil {
+		return options, err
+	}
+	options.sources = sources
+
+	if mapRaw, exists := raw["map"]; exists {
+		options.valueMap, err = parseMapParamMapping(mapRaw)
+		if err != nil {
+			return options, err
+		}
+	} else if mapRaw, exists := raw["mappings"]; exists {
+		options.valueMap, err = parseMapParamMapping(mapRaw)
+		if err != nil {
+			return options, err
+		}
+	}
+
+	if normalize, ok := raw["normalize"].(bool); ok {
+		options.normalize = normalize
+	}
+	if parsePixelRatio, ok := raw["parse_pixel_ratio"].(bool); ok {
+		options.parsePixelRatio = parsePixelRatio
+	}
+	if deleteSources, ok := raw["delete_sources"].(bool); ok {
+		options.deleteSources = deleteSources
+	}
+	if keepOrigin, ok := raw["keep_origin"].(bool); ok {
+		options.keepOrigin = keepOrigin
+	}
+
+	if len(options.sources) == 0 {
+		return options, fmt.Errorf("map_param sources are required")
+	}
+	if options.normalize {
+		options.normalizedMap = make(map[string]interface{}, len(options.valueMap))
+		for key, val := range options.valueMap {
+			normalized := normalizeMapParamKey(key)
+			if normalized == "" {
+				continue
+			}
+			options.normalizedMap[normalized] = val
+		}
+	}
+
+	return options, nil
+}
+
+func parseMapParamStringList(raw interface{}) ([]string, error) {
+	switch typed := raw.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		parts := strings.Split(typed, ",")
+		result := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if item := strings.TrimSpace(part); item != "" {
+				result = append(result, item)
+			}
+		}
+		return result, nil
+	case []interface{}:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			itemStr := strings.TrimSpace(fmt.Sprintf("%v", item))
+			if itemStr != "" {
+				result = append(result, itemStr)
+			}
+		}
+		return result, nil
+	case []string:
+		result := make([]string, 0, len(typed))
+		for _, item := range typed {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				result = append(result, item)
+			}
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("map_param sources must be string or array")
+	}
+}
+
+func parseMapParamMapping(raw interface{}) (map[string]interface{}, error) {
+	switch typed := raw.(type) {
+	case nil:
+		return map[string]interface{}{}, nil
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			result[key] = value
+		}
+		return result, nil
+	case map[string]string:
+		result := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			result[key] = value
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("map_param map must be an object")
+	}
+}
+
+func findMapParamSource(jsonStr string, sources []string) (string, gjson.Result, bool) {
+	for _, source := range sources {
+		path := processNegativeIndex(jsonStr, strings.TrimSpace(source))
+		if path == "" {
+			continue
+		}
+		value := gjson.Get(jsonStr, path)
+		if !isMapParamSourceValuePresent(value) {
+			continue
+		}
+		return path, value, true
+	}
+	return "", gjson.Result{}, false
+}
+
+func isMapParamSourceValuePresent(value gjson.Result) bool {
+	if !value.Exists() || value.Type == gjson.Null {
+		return false
+	}
+	if value.Type == gjson.String {
+		return strings.TrimSpace(value.String()) != ""
+	}
+	return true
+}
+
+func resolveMapParamValue(value gjson.Result, options mapParamOptions) (interface{}, bool) {
+	if len(options.valueMap) == 0 {
+		return mapParamSourceValue(value), true
+	}
+
+	sourceKey, ok := mapParamSourceKey(value)
+	if !ok {
+		return nil, false
+	}
+	if options.parsePixelRatio {
+		if ratio, ok := parseMapParamPixelRatio(sourceKey); ok {
+			if mapped, ok := lookupMapParamValue(ratio, options); ok {
+				return mapped, true
+			}
+		}
+	}
+	return lookupMapParamValue(sourceKey, options)
+}
+
+func mapParamSourceKey(value gjson.Result) (string, bool) {
+	if !isMapParamSourceValuePresent(value) {
+		return "", false
+	}
+	if value.Type == gjson.String {
+		return strings.TrimSpace(value.String()), true
+	}
+	if value.Type == gjson.JSON {
+		return strings.TrimSpace(value.Raw), true
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", value.Value())), true
+}
+
+func mapParamSourceValue(value gjson.Result) interface{} {
+	if value.Type != gjson.JSON {
+		return value.Value()
+	}
+	var parsed interface{}
+	if err := common.Unmarshal([]byte(value.Raw), &parsed); err != nil {
+		return value.Raw
+	}
+	return parsed
+}
+
+func lookupMapParamValue(key string, options mapParamOptions) (interface{}, bool) {
+	if mapped, ok := options.valueMap[key]; ok {
+		return mapped, true
+	}
+	if !options.normalize {
+		return nil, false
+	}
+	normalized := normalizeMapParamKey(key)
+	if normalized == "" {
+		return nil, false
+	}
+	mapped, ok := options.normalizedMap[normalized]
+	return mapped, ok
+}
+
+func normalizeMapParamKey(key string) string {
+	key = strings.TrimSpace(strings.ToLower(key))
+	if key == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.Grow(len(key))
+	for _, r := range key {
+		switch r {
+		case ' ', '\t', '\n', '\r', '_', '-':
+			continue
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
+}
+
+func parseMapParamPixelRatio(raw string) (string, bool) {
+	matches := pixelSizeRegexp.FindStringSubmatch(raw)
+	if len(matches) != 3 {
+		return "", false
+	}
+	width, err := strconv.Atoi(matches[1])
+	if err != nil || width <= 0 {
+		return "", false
+	}
+	height, err := strconv.Atoi(matches[2])
+	if err != nil || height <= 0 {
+		return "", false
+	}
+	divisor := gcdInt(width, height)
+	if divisor <= 0 {
+		return "", false
+	}
+	return fmt.Sprintf("%d:%d", width/divisor, height/divisor), true
+}
+
+func gcdInt(a, b int) int {
+	if a < 0 {
+		a = -a
+	}
+	if b < 0 {
+		b = -b
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func parseParamOverrideReturnError(value interface{}) (*ParamOverrideReturnError, error) {

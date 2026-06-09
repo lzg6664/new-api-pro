@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -90,18 +89,7 @@ func getPriority(group string, model string, retry int) (int, error) {
 }
 
 func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
-	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
-	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
-		if err != nil {
-			return nil, err
-		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
-		}
-	}
-
-	return channelQuery, nil
+	return DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true), nil
 }
 
 func GetChannel(group string, model string, retry int) (*Channel, error) {
@@ -112,11 +100,7 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 	if err != nil {
 		return nil, err
 	}
-	if common.UsingSQLite || common.UsingPostgreSQL {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
-	} else {
-		err = channelQuery.Order("weight DESC").Find(&abilities).Error
-	}
+	err = channelQuery.Order("priority DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err
 	}
@@ -125,74 +109,35 @@ func GetChannel(group string, model string, retry int) (*Channel, error) {
 		return nil, nil
 	}
 
-	// Load channels for each ability to determine selection mode
 	var pollingChannels []*Channel
-	var weightAbilities []Ability
 	for _, ability_ := range abilities {
 		ch := Channel{}
 		err = DB.First(&ch, "id = ?", ability_.ChannelId).Error
 		if err != nil {
 			continue // skip if channel not found
 		}
-		if ch.GetSelectionMode() == constant.ChannelSelectionModePolling {
-			pollingChannels = append(pollingChannels, &ch)
-		} else {
-			weightAbilities = append(weightAbilities, ability_)
-		}
+		pollingChannels = append(pollingChannels, &ch)
 	}
 
-	// Try round-robin among polling channels first
-	if len(pollingChannels) > 0 {
-		pollingIndexLock.Lock()
-		if group2model2pollingIndex == nil {
-			group2model2pollingIndex = make(map[string]map[string]int)
-		}
-		if group2model2pollingIndex[group] == nil {
-			group2model2pollingIndex[group] = make(map[string]int)
-		}
-		idx := group2model2pollingIndex[group][model]
-		if idx >= len(pollingChannels) {
-			idx = 0
-		}
-		// Iterate from current index, wrapping around
-		for attempt := 0; attempt < len(pollingChannels); attempt++ {
-			ch := pollingChannels[idx]
-			idx = (idx + 1) % len(pollingChannels)
-			group2model2pollingIndex[group][model] = idx
-			pollingIndexLock.Unlock()
-			return ch, nil
-		}
-		pollingIndexLock.Unlock()
-		// all polling channels exhausted, fall through to weighted channels
-	}
-
-	// Fall through to weighted random for weight channels
-	if len(weightAbilities) == 0 {
+	if len(pollingChannels) == 0 {
 		return nil, nil
 	}
 
-	// Randomly choose one from weight abilities
-	weightSum := uint(0)
-	for _, ability_ := range weightAbilities {
-		weightSum += ability_.Weight + 10
+	pollingIndexLock.Lock()
+	defer pollingIndexLock.Unlock()
+	if group2model2pollingIndex == nil {
+		group2model2pollingIndex = make(map[string]map[string]int)
 	}
-	// Randomly choose one
-	weight := common.GetRandomInt(int(weightSum))
-	for _, ability_ := range weightAbilities {
-		weight -= int(ability_.Weight) + 10
-		if weight <= 0 {
-			channel := Channel{}
-			channel.Id = ability_.ChannelId
-			err = DB.First(&channel, "id = ?", channel.Id).Error
-			return &channel, err
-		}
+	if group2model2pollingIndex[group] == nil {
+		group2model2pollingIndex[group] = make(map[string]int)
 	}
-
-	// fallback: use first weighted ability
-	channel := Channel{}
-	channel.Id = weightAbilities[0].ChannelId
-	err = DB.First(&channel, "id = ?", channel.Id).Error
-	return &channel, err
+	idx := group2model2pollingIndex[group][model]
+	if idx >= len(pollingChannels) {
+		idx = 0
+	}
+	ch := pollingChannels[idx]
+	group2model2pollingIndex[group][model] = (idx + 1) % len(pollingChannels)
+	return ch, nil
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {
@@ -332,6 +277,23 @@ func UpdateAbilityByTag(tag string, newTag *string, priority *int64, weight *uin
 		ability.Weight = *weight
 	}
 	return DB.Model(&Ability{}).Where("tag = ?", tag).Updates(ability).Error
+}
+
+func UpdateAbilityByChannel(channelId int, tag *string, priority *int64, weight *uint) error {
+	updateData := map[string]interface{}{}
+	if tag != nil {
+		updateData["tag"] = *tag
+	}
+	if priority != nil {
+		updateData["priority"] = *priority
+	}
+	if weight != nil {
+		updateData["weight"] = *weight
+	}
+	if len(updateData) == 0 {
+		return nil
+	}
+	return DB.Model(&Ability{}).Where("channel_id = ?", channelId).Updates(updateData).Error
 }
 
 var fixLock = sync.Mutex{}

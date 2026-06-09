@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"sync"
 
@@ -18,6 +17,34 @@ import (
 	"github.com/samber/lo"
 	"gorm.io/gorm"
 )
+
+// ChannelFeature 渠道高级功能标志（从 v_channel_features 视图读取）
+type ChannelFeature struct {
+	Id                int    `json:"id"`
+	Name              string `json:"name"`
+	Status            int    `json:"status"`
+	AsyncTask         bool   `json:"async_task"`
+	RestRoutes        int    `json:"rest_routes"`
+	ThinkingToContent bool   `json:"thinking_to_content"`
+	ForceFormat       bool   `json:"force_format"`
+	PassThroughBody   bool   `json:"pass_through_body"`
+	ImgPrefixCount    int    `json:"img_prefix_count"`
+	UpstreamUpdate    bool   `json:"upstream_update"`
+	AsyncOutputType   string `json:"async_output_type"`
+	AsyncQueryPath    string `json:"async_query_path"`
+}
+
+func GetChannelFeatures() ([]ChannelFeature, error) {
+	var features []ChannelFeature
+	err := DB.Raw("SELECT id, name, status, async_task, rest_routes, thinking_to_content, force_format, pass_through_body, img_prefix_count, upstream_update, async_output_type, async_query_path FROM v_channel_features ORDER BY id").Scan(&features).Error
+	if err != nil {
+		return nil, err
+	}
+	if features == nil {
+		features = make([]ChannelFeature, 0)
+	}
+	return features, nil
+}
 
 type Channel struct {
 	Id                 int     `json:"id"`
@@ -60,14 +87,12 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey             bool                          `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize           int                           `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList     map[int]int                   `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason map[int]string                `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime   map[int]int64                 `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex   int                           `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode         `json:"multi_key_mode"`
-	SelectionMode          constant.ChannelSelectionMode `json:"selection_mode"`
+	IsMultiKey             bool           `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize           int            `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList     map[int]int    `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason map[int]string `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime   map[int]int64  `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex   int            `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 }
 
 // Value implements driver.Valuer interface
@@ -122,7 +147,16 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	lock.Lock()
 	defer lock.Unlock()
 
-	statusList := channel.ChannelInfo.MultiKeyStatusList
+	channelInfo := &channel.ChannelInfo
+	cachedInfo, err := CacheGetChannelInfo(channel.Id)
+	if err != nil {
+		return "", 0, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	}
+	if cachedInfo != nil {
+		channelInfo = cachedInfo
+	}
+
+	statusList := channelInfo.MultiKeyStatusList
 	// helper to get key status, default to enabled when missing
 	getStatus := func(idx int) int {
 		if statusList == nil {
@@ -148,48 +182,31 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		return "", 0, types.NewError(errors.New("no enabled keys"), types.ErrorCodeChannelNoAvailableKey)
 	}
 
-	switch channel.ChannelInfo.MultiKeyMode {
-	case constant.MultiKeyModeRandom:
-		// Randomly pick one enabled key
-		selectedIdx := enabledIdx[rand.Intn(len(enabledIdx))]
-		return keys[selectedIdx], selectedIdx, nil
-	case constant.MultiKeyModePolling:
-		// Use channel-specific lock to ensure thread-safe polling
-
-		channelInfo, err := CacheGetChannelInfo(channel.Id)
-		if err != nil {
-			return "", 0, types.NewError(err, types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
+	// Use channel-specific lock to ensure thread-safe polling.
+	defer func() {
+		if common.DebugEnabled {
+			println(fmt.Sprintf("channel %d polling index: %d", channel.Id, channel.ChannelInfo.MultiKeyPollingIndex))
 		}
-		//println("before polling index:", channel.ChannelInfo.MultiKeyPollingIndex)
-		defer func() {
-			if common.DebugEnabled {
-				println(fmt.Sprintf("channel %d polling index: %d", channel.Id, channel.ChannelInfo.MultiKeyPollingIndex))
-			}
-			if !common.MemoryCacheEnabled {
-				_ = channel.SaveChannelInfo()
-			} else {
-				// CacheUpdateChannel(channel)
-			}
-		}()
-		// Start from the saved polling index and look for the next enabled key
-		start := channelInfo.MultiKeyPollingIndex
-		if start < 0 || start >= len(keys) {
-			start = 0
+		if !common.MemoryCacheEnabled {
+			_ = channel.SaveChannelInfo()
+		} else {
+			// CacheUpdateChannel(channel)
 		}
-		for i := 0; i < len(keys); i++ {
-			idx := (start + i) % len(keys)
-			if getStatus(idx) == common.ChannelStatusEnabled {
-				// update polling index for next call (point to the next position)
-				channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
-				return keys[idx], idx, nil
-			}
-		}
-		// Fallback – should not happen, but return first enabled key
-		return keys[enabledIdx[0]], enabledIdx[0], nil
-	default:
-		// Unknown mode, default to first enabled key (or original key string)
-		return keys[enabledIdx[0]], enabledIdx[0], nil
+	}()
+	start := channelInfo.MultiKeyPollingIndex
+	if start < 0 || start >= len(keys) {
+		start = 0
 	}
+	for i := 0; i < len(keys); i++ {
+		idx := (start + i) % len(keys)
+		if getStatus(idx) == common.ChannelStatusEnabled {
+			next := (idx + 1) % len(keys)
+			channelInfo.MultiKeyPollingIndex = next
+			channel.ChannelInfo.MultiKeyPollingIndex = next
+			return keys[idx], idx, nil
+		}
+	}
+	return keys[enabledIdx[0]], enabledIdx[0], nil
 }
 
 func (channel *Channel) SaveChannelInfo() error {
@@ -423,13 +440,6 @@ func (channel *Channel) GetWeight() int {
 	return int(*channel.Weight)
 }
 
-func (channel *Channel) GetSelectionMode() constant.ChannelSelectionMode {
-	if channel.ChannelInfo.SelectionMode == "" {
-		return constant.ChannelSelectionModeWeightedRandom
-	}
-	return channel.ChannelInfo.SelectionMode
-}
-
 func (channel *Channel) GetBaseURL() string {
 	if channel.BaseURL == nil {
 		return ""
@@ -505,7 +515,34 @@ func (channel *Channel) Update() error {
 		}
 	}
 	var err error
-	err = DB.Model(channel).Updates(channel).Error
+	updateFields := []string{
+		"type",
+		"openai_organization",
+		"test_model",
+		"name",
+		"weight",
+		"base_url",
+		"other",
+		"models",
+		"group",
+		"model_mapping",
+		"status_code_mapping",
+		"priority",
+		"auto_ban",
+		"other_info",
+		"tag",
+		"setting",
+		"param_override",
+		"header_override",
+		"response_override",
+		"remark",
+		"channel_info",
+		"settings",
+	}
+	if channel.Key != "" {
+		updateFields = append(updateFields, "key")
+	}
+	err = DB.Model(channel).Select(updateFields).Updates(channel).Error
 	if err != nil {
 		return err
 	}
@@ -687,6 +724,37 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		}
 	}
 	return true
+}
+
+// UpdateChannelStatusById 仅更新渠道status字段
+func UpdateChannelStatusById(id int, status int) error {
+	err := DB.Model(&Channel{}).Where("id = ?", id).Update("status", status).Error
+	if err != nil {
+		return err
+	}
+	return UpdateAbilityStatus(id, status == common.ChannelStatusEnabled)
+}
+
+func UpdateChannelPartialById(id int, updateFields map[string]interface{}, recreateAbilities bool, tag *string, priority *int64, weight *uint) (*Channel, error) {
+	if len(updateFields) > 0 {
+		if err := DB.Model(&Channel{}).Where("id = ?", id).Updates(updateFields).Error; err != nil {
+			return nil, err
+		}
+	}
+	channel, err := GetChannelById(id, true)
+	if err != nil {
+		return nil, err
+	}
+	if recreateAbilities {
+		if err := channel.UpdateAbilities(nil); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := UpdateAbilityByChannel(id, tag, priority, weight); err != nil {
+			return nil, err
+		}
+	}
+	return channel, nil
 }
 
 func EnableChannelByTag(tag string) error {

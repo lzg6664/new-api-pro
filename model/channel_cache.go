@@ -3,14 +3,12 @@ package model
 import (
 	"errors"
 	"fmt"
-	"math/rand"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
@@ -73,12 +71,9 @@ func InitChannelCache() {
 	for i, channel := range newChannelId2channel {
 		if channel.ChannelInfo.IsMultiKey {
 			channel.Keys = channel.GetKeys()
-			if channel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-				if oldChannel, ok := channelsIDM[i]; ok {
-					// 存在旧的渠道，如果是多key且轮询，保留轮询索引信息
-					if oldChannel.ChannelInfo.IsMultiKey && oldChannel.ChannelInfo.MultiKeyMode == constant.MultiKeyModePolling {
-						channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
-					}
+			if oldChannel, ok := channelsIDM[i]; ok {
+				if oldChannel.ChannelInfo.IsMultiKey {
+					channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
 				}
 			}
 		}
@@ -152,94 +147,42 @@ func GetRandomSatisfiedChannel(group string, model string, retry int) (*Channel,
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])
 
-	// get the priority for the given retry number
 	var pollingChannels []*Channel
-	var weightChannels []*Channel
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
-			if channel.GetPriority() == targetPriority {
-				if channel.GetSelectionMode() == constant.ChannelSelectionModePolling {
-					pollingChannels = append(pollingChannels, channel)
-				} else {
-					weightChannels = append(weightChannels, channel)
-				}
-			}
+			pollingChannels = append(pollingChannels, channel)
 		} else {
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
 		}
 	}
+	sort.SliceStable(pollingChannels, func(i, j int) bool {
+		return pollingChannels[i].GetPriority() > pollingChannels[j].GetPriority()
+	})
 
-	// Try round-robin among polling channels first
-	if len(pollingChannels) > 0 {
-		pollingIndexLock.Lock()
-		if group2model2pollingIndex == nil {
-			group2model2pollingIndex = make(map[string]map[string]int)
-		}
-		if group2model2pollingIndex[group] == nil {
-			group2model2pollingIndex[group] = make(map[string]int)
-		}
-		idx := group2model2pollingIndex[group][model]
-		if idx >= len(pollingChannels) {
-			idx = 0
-		}
-		// Iterate from current index, wrapping around, find the first enabled channel
-		for attempt := 0; attempt < len(pollingChannels); attempt++ {
-			ch := pollingChannels[idx]
-			idx = (idx + 1) % len(pollingChannels)
-			if _, ok := channelsIDM[ch.Id]; ok {
-				group2model2pollingIndex[group][model] = idx
-				pollingIndexLock.Unlock()
-				return ch, nil
-			}
-		}
-		pollingIndexLock.Unlock()
-		// all polling channels exhausted, fall through to weighted channels
-	}
-
-	if len(weightChannels) == 0 && len(pollingChannels) == 0 {
+	if len(pollingChannels) == 0 {
 		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
 	}
 
-	// Fall through to weighted random for weight channels (or all channels if no polling)
-	targetChannels := weightChannels
-	if len(targetChannels) == 0 {
-		// Only polling channels exist and all were exhausted, or no weight channels
-		return nil, errors.New(fmt.Sprintf("no weighted channel found for round-robin fallback, group: %s, model: %s, priority: %d", group, model, targetPriority))
+	pollingIndexLock.Lock()
+	defer pollingIndexLock.Unlock()
+	if group2model2pollingIndex == nil {
+		group2model2pollingIndex = make(map[string]map[string]int)
 	}
-
-	var sumWeight = 0
-	for _, channel := range targetChannels {
-		sumWeight += channel.GetWeight()
+	if group2model2pollingIndex[group] == nil {
+		group2model2pollingIndex[group] = make(map[string]int)
 	}
-
-	// smoothing factor and adjustment
-	smoothingFactor := 1
-	smoothingAdjustment := 0
-
-	if sumWeight == 0 {
-		// when all channels have weight 0, set sumWeight to the number of channels and set smoothing adjustment to 100
-		// each channel's effective weight = 100
-		sumWeight = len(targetChannels) * 100
-		smoothingAdjustment = 100
-	} else if sumWeight/len(targetChannels) < 10 {
-		// when the average weight is less than 10, set smoothing factor to 100
-		smoothingFactor = 100
+	idx := group2model2pollingIndex[group][model]
+	if idx >= len(pollingChannels) {
+		idx = 0
 	}
-
-	// Calculate the total weight of all channels up to endIdx
-	totalWeight := sumWeight * smoothingFactor
-
-	// Generate a random value in the range [0, totalWeight)
-	randomWeight := rand.Intn(totalWeight)
-
-	// Find a channel based on its weight
-	for _, channel := range targetChannels {
-		randomWeight -= channel.GetWeight()*smoothingFactor + smoothingAdjustment
-		if randomWeight < 0 {
-			return channel, nil
+	for attempt := 0; attempt < len(pollingChannels); attempt++ {
+		ch := pollingChannels[idx]
+		idx = (idx + 1) % len(pollingChannels)
+		if _, ok := channelsIDM[ch.Id]; ok {
+			group2model2pollingIndex[group][model] = idx
+			return ch, nil
 		}
 	}
-	// return null if no channel is not found
 	return nil, errors.New("channel not found")
 }
 
@@ -283,19 +226,9 @@ func CacheUpdateChannelStatus(id int, status int) {
 	defer channelSyncLock.Unlock()
 	if channel, ok := channelsIDM[id]; ok {
 		channel.Status = status
-	}
-	if status != common.ChannelStatusEnabled {
-		// delete the channel from group2model2channels
-		for group, model2channels := range group2model2channels {
-			for model, channels := range model2channels {
-				for i, channelId := range channels {
-					if channelId == id {
-						// remove the channel from the slice
-						group2model2channels[group][model] = append(channels[:i], channels[i+1:]...)
-						break
-					}
-				}
-			}
+		removeChannelFromGroupModelIndexLocked(id)
+		if status == common.ChannelStatusEnabled {
+			addChannelToGroupModelIndexLocked(channel)
 		}
 	}
 }
@@ -310,9 +243,90 @@ func CacheUpdateChannel(channel *Channel) {
 		return
 	}
 
-	println("CacheUpdateChannel:", channel.Id, channel.Name, channel.Status, channel.ChannelInfo.MultiKeyPollingIndex)
+	if oldChannel, ok := channelsIDM[channel.Id]; ok {
+		if channel.ChannelInfo.IsMultiKey &&
+			oldChannel.ChannelInfo.IsMultiKey {
+			channel.ChannelInfo.MultiKeyPollingIndex = oldChannel.ChannelInfo.MultiKeyPollingIndex
+		}
+	}
+	if channel.ChannelInfo.IsMultiKey {
+		channel.Keys = channel.GetKeys()
+	}
 
-	println("before:", channelsIDM[channel.Id].ChannelInfo.MultiKeyPollingIndex)
 	channelsIDM[channel.Id] = channel
-	println("after :", channelsIDM[channel.Id].ChannelInfo.MultiKeyPollingIndex)
+	removeChannelFromGroupModelIndexLocked(channel.Id)
+	if channel.Status == common.ChannelStatusEnabled {
+		addChannelToGroupModelIndexLocked(channel)
+	}
+}
+
+func removeChannelFromGroupModelIndexLocked(channelId int) {
+	for group, model2channels := range group2model2channels {
+		for model, channelIds := range model2channels {
+			filtered := channelIds[:0]
+			for _, id := range channelIds {
+				if id != channelId {
+					filtered = append(filtered, id)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(model2channels, model)
+				continue
+			}
+			group2model2channels[group][model] = filtered
+		}
+		if len(model2channels) == 0 {
+			delete(group2model2channels, group)
+		}
+	}
+}
+
+func addChannelToGroupModelIndexLocked(channel *Channel) {
+	if channel == nil {
+		return
+	}
+	if group2model2channels == nil {
+		group2model2channels = make(map[string]map[string][]int)
+	}
+	for _, group := range splitChannelCacheCSV(channel.Group) {
+		if group2model2channels[group] == nil {
+			group2model2channels[group] = make(map[string][]int)
+		}
+		for _, model := range splitChannelCacheCSV(channel.Models) {
+			channelIds := group2model2channels[group][model]
+			if !channelCacheContainsId(channelIds, channel.Id) {
+				channelIds = append(channelIds, channel.Id)
+			}
+			sort.Slice(channelIds, func(i, j int) bool {
+				left, leftOk := channelsIDM[channelIds[i]]
+				right, rightOk := channelsIDM[channelIds[j]]
+				if !leftOk || !rightOk {
+					return leftOk
+				}
+				return left.GetPriority() > right.GetPriority()
+			})
+			group2model2channels[group][model] = channelIds
+		}
+	}
+}
+
+func splitChannelCacheCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func channelCacheContainsId(channelIds []int, channelId int) bool {
+	for _, id := range channelIds {
+		if id == channelId {
+			return true
+		}
+	}
+	return false
 }

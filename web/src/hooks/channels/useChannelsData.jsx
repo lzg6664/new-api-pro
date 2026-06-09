@@ -93,6 +93,21 @@ export const useChannelsData = () => {
   const [globalPassThroughEnabled, setGlobalPassThroughEnabled] =
     useState(false);
 
+  // Channel features (async_task, routes, etc.)
+  const [featuresMap, setFeaturesMap] = useState({});
+
+  const fetchFeatures = async () => {
+    try {
+      const res = await API.get('/api/channel/features');
+      const { success, data } = res?.data || {};
+      if (success && Array.isArray(data)) {
+        const map = {};
+        data.forEach((f) => { map[f.id] = f; });
+        setFeaturesMap(map);
+      }
+    } catch { /* non-critical */ }
+  };
+
   const fetchGlobalPassThroughEnabled = async () => {
     try {
       const res = await API.get('/api/option/');
@@ -140,6 +155,7 @@ export const useChannelsData = () => {
     BALANCE: 'balance',
     PRIORITY: 'priority',
     WEIGHT: 'weight',
+    FEATURES: 'features',
     OPERATE: 'operate',
   };
 
@@ -166,6 +182,7 @@ export const useChannelsData = () => {
     fetchGroups().then();
     loadChannelModels().then();
     fetchGlobalPassThroughEnabled().then();
+    fetchFeatures().then();
   }, []);
 
   // Column visibility management
@@ -180,6 +197,7 @@ export const useChannelsData = () => {
       [COLUMN_KEYS.BALANCE]: true,
       [COLUMN_KEYS.PRIORITY]: true,
       [COLUMN_KEYS.WEIGHT]: true,
+      [COLUMN_KEYS.FEATURES]: true,
       [COLUMN_KEYS.OPERATE]: true,
     };
   };
@@ -449,32 +467,28 @@ export const useChannelsData = () => {
         break;
       case 'enable':
         data.status = 1;
-        res = await API.put('/api/channel/', data);
+        res = await API.put('/api/channel/status', data);
         break;
       case 'disable':
         data.status = 2;
-        res = await API.put('/api/channel/', data);
+        res = await API.put('/api/channel/status', data);
         break;
       case 'priority':
         if (value === '') return;
         data.priority = parseInt(value);
-        res = await API.put('/api/channel/', data);
+        res = await API.put('/api/channel/partial', data);
         break;
       case 'weight':
         if (value === '') return;
         data.weight = parseInt(value);
         if (data.weight < 0) data.weight = 0;
-        res = await API.put('/api/channel/', data);
-        break;
-      case 'selection_mode':
-        if (value === '') return;
-        data.selection_mode = value;
-        res = await API.put('/api/channel/', data);
+        res = await API.put('/api/channel/partial', data);
         break;
       case 'enable_all':
-        data.channel_info = record.channel_info;
-        data.channel_info.multi_key_status_list = {};
-        res = await API.put('/api/channel/', data);
+        res = await API.post('/api/channel/multi_key/manage', {
+          channel_id: id,
+          action: 'enable_all_keys',
+        });
         break;
     }
     const { success, message } = res.data;
@@ -482,8 +496,11 @@ export const useChannelsData = () => {
       showSuccess(t('操作成功完成！'));
       let channel = res.data.data;
       let newChannels = [...channels];
-      if (action !== 'delete') {
+      if (action !== 'delete' && channel) {
+        Object.assign(record, channel);
         record.status = channel.status;
+      } else if (action === 'enable_all') {
+        await refresh();
       }
       setChannels(newChannels);
     } else {
@@ -1175,6 +1192,7 @@ export const useChannelsData = () => {
     showColumnSelector,
     setShowColumnSelector,
     COLUMN_KEYS,
+    featuresMap,
 
     // Type tab states
     activeTypeKey,

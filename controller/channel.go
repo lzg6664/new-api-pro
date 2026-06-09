@@ -525,11 +525,9 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 }
 
 type AddChannelRequest struct {
-	Mode                      string                        `json:"mode"`
-	MultiKeyMode              constant.MultiKeyMode         `json:"multi_key_mode"`
-	SelectionMode             constant.ChannelSelectionMode `json:"selection_mode"`
-	BatchAddSetKeyPrefix2Name bool                          `json:"batch_add_set_key_prefix_2_name"`
-	Channel                   *model.Channel                `json:"channel"`
+	Mode                      string         `json:"mode"`
+	BatchAddSetKeyPrefix2Name bool           `json:"batch_add_set_key_prefix_2_name"`
+	Channel                   *model.Channel `json:"channel"`
 }
 
 func getVertexArrayKeys(keys string) ([]string, error) {
@@ -582,12 +580,10 @@ func AddChannel(c *gin.Context) {
 	}
 
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
-	addChannelRequest.Channel.ChannelInfo.SelectionMode = addChannelRequest.SelectionMode
 	keys := make([]string, 0)
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
 		addChannelRequest.Channel.ChannelInfo.IsMultiKey = true
-		addChannelRequest.Channel.ChannelInfo.MultiKeyMode = addChannelRequest.MultiKeyMode
 		if addChannelRequest.Channel.Type == constant.ChannelTypeVertexAi && addChannelRequest.Channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
 			array, err := getVertexArrayKeys(addChannelRequest.Channel.Key)
 			if err != nil {
@@ -849,9 +845,31 @@ func DeleteChannelBatch(c *gin.Context) {
 
 type PatchChannel struct {
 	model.Channel
-	MultiKeyMode  *string `json:"multi_key_mode"`
-	SelectionMode *string `json:"selection_mode"`
-	KeyMode       *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
+	KeyMode *string `json:"key_mode"`
+}
+
+type ChannelPartialUpdateRequest struct {
+	Id                 int     `json:"id" binding:"required"`
+	OpenAIOrganization *string `json:"openai_organization"`
+	TestModel          *string `json:"test_model"`
+	Name               *string `json:"name"`
+	Weight             *uint   `json:"weight"`
+	BaseURL            *string `json:"base_url"`
+	Other              *string `json:"other"`
+	Models             *string `json:"models"`
+	Group              *string `json:"group"`
+	ModelMapping       *string `json:"model_mapping"`
+	StatusCodeMapping  *string `json:"status_code_mapping"`
+	Priority           *int64  `json:"priority"`
+	AutoBan            *int    `json:"auto_ban"`
+	OtherInfo          *string `json:"other_info"`
+	Tag                *string `json:"tag"`
+	Setting            *string `json:"setting"`
+	ParamOverride      *string `json:"param_override"`
+	HeaderOverride     *string `json:"header_override"`
+	ResponseOverride   *string `json:"response_override"`
+	Remark             *string `json:"remark"`
+	Settings           *string `json:"settings"`
 }
 
 func UpdateChannel(c *gin.Context) {
@@ -862,7 +880,6 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 
-	// 使用统一的校验函数
 	if err := validateChannel(&channel.Channel, false); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -882,16 +899,6 @@ func UpdateChannel(c *gin.Context) {
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
-
-	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
-	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {
-		channel.ChannelInfo.MultiKeyMode = constant.MultiKeyMode(*channel.MultiKeyMode)
-	}
-
-	// If the request explicitly specifies a new SelectionMode, apply it on top of the original info.
-	if channel.SelectionMode != nil && *channel.SelectionMode != "" {
-		channel.ChannelInfo.SelectionMode = constant.ChannelSelectionMode(*channel.SelectionMode)
-	}
 
 	// 处理多key模式下的密钥追加/覆盖逻辑
 	if channel.KeyMode != nil && channel.ChannelInfo.IsMultiKey {
@@ -917,9 +924,7 @@ func UpdateChannel(c *gin.Context) {
 					existingKeys = strings.Split(strings.Trim(originChannel.Key, "\n"), "\n")
 				}
 
-				// 处理 Vertex AI 的特殊情况
 				if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
-					// 尝试解析新密钥为JSON数组
 					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
 						array, err := getVertexArrayKeys(channel.Key)
 						if err != nil {
@@ -978,7 +983,7 @@ func UpdateChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.InitChannelCache()
+	model.CacheUpdateChannel(&channel.Channel)
 	service.ResetProxyClientCache()
 	channel.Key = ""
 	clearChannelInfo(&channel.Channel)
@@ -988,6 +993,198 @@ func UpdateChannel(c *gin.Context) {
 		"data":    channel,
 	})
 	return
+}
+
+// UpdateChannelPartial updates only fields explicitly present in the request body.
+func UpdateChannelPartial(c *gin.Context) {
+	req := ChannelPartialUpdateRequest{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if req.Id <= 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "invalid channel id",
+		})
+		return
+	}
+
+	validateJSONField := func(value *string, message string) bool {
+		if value == nil {
+			return true
+		}
+		trimmed := strings.TrimSpace(*value)
+		if trimmed != "" && !json.Valid([]byte(trimmed)) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": message,
+			})
+			return false
+		}
+		*value = trimmed
+		return true
+	}
+	if !validateJSONField(req.ModelMapping, "model_mapping must be valid JSON") ||
+		!validateJSONField(req.StatusCodeMapping, "status_code_mapping must be valid JSON") ||
+		!validateJSONField(req.OtherInfo, "other_info must be valid JSON") ||
+		!validateJSONField(req.Setting, "setting must be valid JSON") ||
+		!validateJSONField(req.ParamOverride, "param_override must be valid JSON") ||
+		!validateJSONField(req.HeaderOverride, "header_override must be valid JSON") ||
+		!validateJSONField(req.ResponseOverride, "response_override must be valid JSON") ||
+		!validateJSONField(req.Settings, "settings must be valid JSON") {
+		return
+	}
+
+	updateFields := map[string]interface{}{}
+	setString := func(column string, value *string) {
+		if value != nil {
+			updateFields[column] = *value
+		}
+	}
+	setString("openai_organization", req.OpenAIOrganization)
+	setString("test_model", req.TestModel)
+	setString("name", req.Name)
+	setString("base_url", req.BaseURL)
+	setString("other", req.Other)
+	setString("model_mapping", req.ModelMapping)
+	setString("status_code_mapping", req.StatusCodeMapping)
+	setString("other_info", req.OtherInfo)
+	setString("tag", req.Tag)
+	setString("setting", req.Setting)
+	setString("param_override", req.ParamOverride)
+	setString("header_override", req.HeaderOverride)
+	setString("response_override", req.ResponseOverride)
+	setString("remark", req.Remark)
+	setString("settings", req.Settings)
+
+	recreateAbilities := false
+	if req.Models != nil {
+		models := strings.TrimSpace(*req.Models)
+		if models == "" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "models cannot be empty",
+			})
+			return
+		}
+		req.Models = &models
+		updateFields["models"] = models
+		recreateAbilities = true
+	}
+	if req.Group != nil {
+		group := strings.TrimSpace(*req.Group)
+		if group == "" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "group cannot be empty",
+			})
+			return
+		}
+		req.Group = &group
+		updateFields["group"] = group
+		recreateAbilities = true
+	}
+	if req.Priority != nil {
+		updateFields["priority"] = *req.Priority
+	}
+	if req.Weight != nil {
+		updateFields["weight"] = *req.Weight
+	}
+	if req.AutoBan != nil {
+		updateFields["auto_ban"] = *req.AutoBan
+	}
+
+	if len(updateFields) == 0 {
+		channel, err := model.GetChannelById(req.Id, true)
+		if err != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		channel.Key = ""
+		clearChannelInfo(channel)
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    channel,
+		})
+		return
+	}
+
+	channel, err := model.UpdateChannelPartialById(req.Id, updateFields, recreateAbilities, req.Tag, req.Priority, req.Weight)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	model.CacheUpdateChannel(channel)
+	service.ResetProxyClientCache()
+	channel.Key = ""
+	clearChannelInfo(channel)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    channel,
+	})
+}
+
+func UpdateChannelStatus(c *gin.Context) {
+	var req struct {
+		Id     int `json:"id" binding:"required"`
+		Status int `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if req.Status != common.ChannelStatusEnabled &&
+		req.Status != common.ChannelStatusManuallyDisabled &&
+		req.Status != common.ChannelStatusAutoDisabled {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的状态值",
+		})
+		return
+	}
+
+	channel, err := model.GetChannelById(req.Id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	channel.Status = req.Status
+	err = model.UpdateChannelStatusById(req.Id, req.Status)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	model.CacheUpdateChannel(channel)
+	channel.Key = ""
+	clearChannelInfo(channel)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    channel,
+	})
+}
+
+// GetChannelFeatures 返回所有渠道的高级功能标志
+func GetChannelFeatures(c *gin.Context) {
+	features, err := model.GetChannelFeatures()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    features,
+	})
 }
 
 func FetchModels(c *gin.Context) {

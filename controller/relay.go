@@ -186,14 +186,38 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	var triedChannels map[int]bool
+	var consecutiveDupes int
+
+	for {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
+			if types.IsChannelError(channelErr) {
+				// 渠道级错误（如无可用key），尝试下一个渠道
+				retryParam.IncreaseRetry()
+				continue
+			}
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
 			break
 		}
+
+		// 请求级去重：跳过本次已尝试过的渠道，确保所有渠道都有机会被轮询
+		if triedChannels == nil {
+			triedChannels = make(map[int]bool)
+		}
+		if triedChannels[channel.Id] {
+			consecutiveDupes++
+			if consecutiveDupes >= 3 {
+				logger.LogError(c, fmt.Sprintf("连续 %d 次拿到已尝试渠道 #%d，停止轮询", consecutiveDupes, channel.Id))
+				break
+			}
+			retryParam.IncreaseRetry()
+			continue
+		}
+		triedChannels[channel.Id] = true
+		consecutiveDupes = 0
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -232,6 +256,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		retryParam.IncreaseRetry()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -328,9 +353,6 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if types.IsSkipRetryError(openaiErr) {
 		return false
 	}
-	if retryTimes <= 0 {
-		return false
-	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
@@ -344,7 +366,10 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
-	return operation_setting.ShouldRetryByStatusCode(code)
+	if operation_setting.IsAlwaysSkipRetryStatusCode(code) {
+		return false
+	}
+	return true
 }
 
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
@@ -507,11 +532,22 @@ func RelayTask(c *gin.Context) {
 		Retry:      common.GetPointer(0),
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	var triedChannels map[int]bool
+	var consecutiveDupes int
+
+	for {
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
 			channel = lockedCh
+			// 锁定渠道的重试次数上限：至少允许 1 次重试（共 2 次尝试）
+			lockMaxRetries := common.RetryTimes
+			if lockMaxRetries < 1 {
+				lockMaxRetries = 1
+			}
+			if retryParam.GetRetry() > lockMaxRetries {
+				break
+			}
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
 					taskErr = service.TaskErrorWrapperLocal(setupErr.Err, "setup_locked_channel_failed", http.StatusInternalServerError)
@@ -522,10 +558,31 @@ func RelayTask(c *gin.Context) {
 			var channelErr *types.NewAPIError
 			channel, channelErr = getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
+				if types.IsChannelError(channelErr) {
+					// 渠道级错误（如无可用key），尝试下一个渠道
+					retryParam.IncreaseRetry()
+					continue
+				}
 				logger.LogError(c, channelErr.Error())
 				taskErr = service.TaskErrorWrapperLocal(channelErr.Err, "get_channel_failed", http.StatusInternalServerError)
 				break
 			}
+
+			// 请求级去重：跳过本次已尝试过的渠道
+			if triedChannels == nil {
+				triedChannels = make(map[int]bool)
+			}
+			if triedChannels[channel.Id] {
+				consecutiveDupes++
+				if consecutiveDupes >= 3 {
+					logger.LogError(c, fmt.Sprintf("task relay: 连续 %d 次拿到已尝试渠道 #%d，停止轮询", consecutiveDupes, channel.Id))
+					break
+				}
+				retryParam.IncreaseRetry()
+				continue
+			}
+			triedChannels[channel.Id] = true
+			consecutiveDupes = 0
 		}
 
 		addUsedChannel(c, channel.Id)
@@ -555,6 +612,7 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		retryParam.IncreaseRetry()
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -611,9 +669,6 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		return false
 	}
-	if retryTimes <= 0 {
-		return false
-	}
 	if _, ok := c.Get("specific_channel_id"); ok {
 		return false
 	}
@@ -629,13 +684,6 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 			return false
 		}
 		return true
-	}
-	if taskErr.StatusCode == http.StatusBadRequest {
-		return false
-	}
-	if taskErr.StatusCode == 408 {
-		// azure处理超时不重试
-		return false
 	}
 	if taskErr.LocalError {
 		return false

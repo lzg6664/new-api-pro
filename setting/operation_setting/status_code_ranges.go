@@ -16,13 +16,12 @@ type StatusCodeRange struct {
 
 var AutomaticDisableStatusCodeRanges = []StatusCodeRange{{Start: 401, End: 401}}
 
-// Default behavior matches legacy hardcoded retry rules in controller/relay.go shouldRetry:
-// retry for 1xx, 3xx, 4xx(except 400/408), 5xx(except 504/524), and no retry for 2xx.
+// Default retry behavior mirrors controller/relay.go shouldRetry:
+// retry non-2xx HTTP statuses by default, except statuses that must always skip retry.
 var AutomaticRetryStatusCodeRanges = []StatusCodeRange{
 	{Start: 100, End: 199},
 	{Start: 300, End: 399},
-	{Start: 401, End: 407},
-	{Start: 409, End: 499},
+	{Start: 400, End: 499},
 	{Start: 500, End: 503},
 	{Start: 505, End: 523},
 	{Start: 525, End: 599},
@@ -79,6 +78,9 @@ func IsAlwaysSkipRetryCode(errorCode types.ErrorCode) bool {
 
 func ShouldRetryByStatusCode(code int) bool {
 	if IsAlwaysSkipRetryStatusCode(code) {
+		return false
+	}
+	if code >= 200 && code < 300 {
 		return false
 	}
 	return shouldMatchStatusCodeRanges(AutomaticRetryStatusCodeRanges, code)

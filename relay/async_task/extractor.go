@@ -1,10 +1,11 @@
 package async_task
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/QuantumNous/new-api/common"
 )
 
 // extractByPath 从 JSON 中按点分路径提取值，支持数组索引。
@@ -14,7 +15,7 @@ func extractByPath(body []byte, path string) string {
 		return ""
 	}
 	var data any
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := common.Unmarshal(body, &data); err != nil {
 		return ""
 	}
 	parts := parsePath(path)
@@ -82,7 +83,7 @@ func replaceByPath(body []byte, path string, value any) []byte {
 	}
 
 	var data any
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := common.Unmarshal(body, &data); err != nil {
 		return body
 	}
 
@@ -95,7 +96,7 @@ func replaceByPath(body []byte, path string, value any) []byte {
 		return body
 	}
 
-	updated, err := json.Marshal(data)
+	updated, err := common.Marshal(data)
 	if err != nil {
 		return body
 	}

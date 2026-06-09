@@ -61,6 +61,7 @@ const OPERATION_MODE_OPTIONS = [
   { label: '转大写', value: 'to_upper' },
   { label: '返回自定义错误', value: 'return_error' },
   { label: '清理对象项', value: 'prune_objects' },
+  { label: '参数映射', value: 'map_param' },
   { label: '请求头透传', value: 'pass_headers' },
   { label: '字段同步', value: 'sync_fields' },
   { label: '媒体转换组件', value: 'transform_media' },
@@ -107,6 +108,7 @@ const MODE_META = {
   to_upper: { path: true },
   return_error: { value: true },
   prune_objects: { pathOptional: true, value: true },
+  map_param: { pathOptional: true, to: true, value: true, keepOrigin: true },
   pass_headers: { value: true, keepOrigin: true },
   sync_fields: { from: true, to: true },
   transform_media: { from: true, to: true, value: true },
@@ -124,6 +126,7 @@ const VALUE_REQUIRED_MODES = new Set([
   'set_header',
   'return_error',
   'prune_objects',
+  'map_param',
   'pass_headers',
   'transform_media',
 ]);
@@ -164,6 +167,7 @@ const MODE_DESCRIPTIONS = {
   to_upper: '把字符串转成大写',
   return_error: '立即返回自定义错误',
   prune_objects: '按条件清理对象中的子项',
+  map_param: '把调用方传入的参数字段和值按预设映射表转换为上游需要的字段和值',
   pass_headers: '把指定请求头透传到上游请求',
   sync_fields: '在一个字段有值、另一个缺失时自动补齐',
   transform_media:
@@ -211,6 +215,7 @@ const getModeToLabel = (mode) => {
   if (mode === 'transform_media') return '目标字段';
   if (mode === 'replace' || mode === 'regex_replace') return '替换为';
   if (mode === 'copy_header' || mode === 'move_header') return '目标请求头';
+  if (mode === 'map_param') return '上游目标字段';
   return '目标字段';
 };
 
@@ -219,6 +224,7 @@ const getModeToPlaceholder = (mode) => {
   if (mode === 'replace') return '（可留空）';
   if (mode === 'regex_replace') return 'openai/gpt-';
   if (mode === 'copy_header' || mode === 'move_header') return 'X-Upstream-Auth';
+  if (mode === 'map_param') return 'aspectRatio';
   return 'original_model';
 };
 
@@ -226,6 +232,7 @@ const getModeValueLabel = (mode) => {
   if (mode === 'transform_media') return '组件配置（JSON 对象）';
   if (mode === 'set_header') return '请求头值（支持字符串或 JSON 映射）';
   if (mode === 'pass_headers') return '透传请求头（支持逗号分隔或 JSON 数组）';
+  if (mode === 'map_param') return '映射配置（JSON 对象）';
   if (
     mode === 'trim_prefix' ||
     mode === 'trim_suffix' ||
@@ -293,6 +300,27 @@ const getModeValuePlaceholder = (mode) => {
   }
   if (mode === 'prune_objects') {
     return '{"type":"redacted_thinking"}';
+  }
+  if (mode === 'map_param') {
+    return JSON.stringify(
+      {
+        sources: ['aspectRatio', 'aspect_ratio', 'ratio', 'size'],
+        map: {
+          '1:1': '1:1',
+          '16:9': '16:9',
+          square: '1:1',
+          landscape: '16:9',
+          '1024x1024': '1:1',
+          '1920x1080': '16:9',
+        },
+        normalize: true,
+        parse_pixel_ratio: true,
+        delete_sources: true,
+        keep_origin: true,
+      },
+      null,
+      2,
+    );
   }
   return '0.7';
 };
@@ -390,6 +418,70 @@ const IMAGE_PIPELINE_TO_COS_TEMPLATE = {
   ],
 };
 
+const GETTOKEN_IMAGE_PARAM_MAPPING_TEMPLATE = {
+  operations: [
+    {
+      description:
+        'Map caller image size/aspect ratio params to GetToken aspectRatio.',
+      mode: 'map_param',
+      to: 'aspectRatio',
+      value: {
+        sources: ['aspectRatio', 'aspect_ratio', 'ratio', 'size'],
+        map: {
+          '1:1': '1:1',
+          '16:9': '16:9',
+          '9:16': '9:16',
+          '4:3': '4:3',
+          '3:4': '3:4',
+          '3:2': '3:2',
+          '2:3': '2:3',
+          '5:4': '5:4',
+          '4:5': '4:5',
+          '21:9': '21:9',
+          square: '1:1',
+          landscape: '16:9',
+          portrait: '9:16',
+          '1024x1024': '1:1',
+          '1920x1080': '16:9',
+          '1080x1920': '9:16',
+          '1024x768': '4:3',
+          '768x1024': '3:4',
+        },
+        normalize: true,
+        parse_pixel_ratio: true,
+        delete_sources: true,
+        keep_origin: true,
+      },
+    },
+    {
+      description: 'Normalize GetToken image resolution values.',
+      mode: 'map_param',
+      to: 'resolution',
+      value: {
+        sources: ['resolution'],
+        map: {
+          '1k': '1k',
+          '2k': '2k',
+          '4k': '4k',
+        },
+        normalize: true,
+        delete_sources: true,
+        keep_origin: false,
+      },
+    },
+    {
+      description: 'Map common image URL params to GetToken imageUrls.',
+      mode: 'map_param',
+      to: 'imageUrls',
+      value: {
+        sources: ['imageUrls', 'image_urls', 'images', 'image'],
+        delete_sources: true,
+        keep_origin: true,
+      },
+    },
+  ],
+};
+
 const AWS_BEDROCK_ANTHROPIC_COMPAT_TEMPLATE = {
   operations: [
     {
@@ -472,6 +564,12 @@ const TEMPLATE_PRESET_CONFIG = {
     label: '图片 URL 转 COS',
     kind: 'operations',
     payload: IMAGE_PIPELINE_TO_COS_TEMPLATE,
+  },
+  gettoken_image_param_mapping: {
+    group: 'scenario',
+    label: 'GetToken 生图参数映射',
+    kind: 'operations',
+    payload: GETTOKEN_IMAGE_PARAM_MAPPING_TEMPLATE,
   },
   claude_cli_headers_passthrough: {
     group: 'scenario',
@@ -915,7 +1013,7 @@ const getOperationModeTagColor = (mode = 'set') => {
   if (mode.includes('replace') || mode.includes('trim')) return 'violet';
   if (mode.includes('copy') || mode.includes('move')) return 'blue';
   if (mode.includes('error') || mode.includes('prune')) return 'red';
-  if (mode.includes('sync')) return 'green';
+  if (mode.includes('sync') || mode.includes('map')) return 'green';
   return 'grey';
 };
 
@@ -1125,6 +1223,48 @@ const validateOperations = (operations, t) => {
         }
       } catch (error) {
         return t('第{{line}} 条 transform_media 配置必须是合法 JSON', {
+          line,
+        });
+      }
+    }
+
+    if (mode === 'map_param') {
+      const raw = String(op.value_text ?? '').trim();
+      if (!raw) {
+        return t('第 {{line}} 条 map_param 缺少映射配置', { line });
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return t('第 {{line}} 条 map_param 配置必须是 JSON 对象', {
+            line,
+          });
+        }
+        const sources = Array.isArray(parsed.sources)
+          ? parsed.sources
+          : parsed.sources !== undefined
+            ? [parsed.sources]
+            : parsed.source !== undefined
+              ? [parsed.source]
+              : [];
+        const validSources = sources
+          .map((item) => String(item ?? '').trim())
+          .filter(Boolean);
+        if (validSources.length === 0) {
+          return t('第 {{line}} 条 map_param 需要 sources 字段', { line });
+        }
+        if (
+          parsed.map !== undefined &&
+          (!parsed.map ||
+            typeof parsed.map !== 'object' ||
+            Array.isArray(parsed.map))
+        ) {
+          return t('第 {{line}} 条 map_param 的 map 必须是 JSON 对象', {
+            line,
+          });
+        }
+      } catch (error) {
+        return t('第 {{line}} 条 map_param 配置必须是合法 JSON', {
           line,
         });
       }

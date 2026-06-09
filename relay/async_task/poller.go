@@ -45,6 +45,7 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 	upstreamTaskID := submitData.UpstreamTaskID
 
 	baseURL := strings.TrimRight(info.ChannelBaseUrl, "/")
+	lastPollFailure := ""
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		time.Sleep(interval)
@@ -52,6 +53,7 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 		// 查询上游任务状态
 		resp, err := doQueryRequest(baseURL, info.ApiKey, upstreamTaskID, config)
 		if err != nil {
+			lastPollFailure = "request failed: " + err.Error()
 			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, err.Error()))
 			continue
 		}
@@ -59,7 +61,13 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			lastPollFailure = "read response failed: " + err.Error()
 			common.SysLog(fmt.Sprintf("async_task poll read body failed: %s", err.Error()))
+			continue
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			lastPollFailure = buildPollingHTTPFailure(resp.StatusCode, body)
+			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, lastPollFailure))
 			continue
 		}
 
@@ -72,12 +80,16 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 			// 提取结果
 			results := extractResultList(body, config)
 			resultBytes, _ := common.Marshal(results)
-			succeedTask(task, json.RawMessage(resultBytes), string(body))
+			if succeedTask(task, json.RawMessage(resultBytes), string(body)) {
+				updateAsyncTaskConsumeLog(task, "succeeded", "async task succeeded", resultURLsFromResults(results, config), "")
+			}
 			return
 
 		case "failed", "failure", "error":
 			errCode, errMsg := extractTaskDiagnostic(body, config)
-			failTask(task, errMsg)
+			if failTask(task, errMsg) {
+				updateAsyncTaskConsumeLog(task, "failed", "async task failed", nil, errMsg)
+			}
 			_ = errCode // 日志记录用
 			common.SysLog(fmt.Sprintf("async_task %s failed: [%s] %s", task.TaskID, errCode, errMsg))
 			return
@@ -90,7 +102,10 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 	}
 
 	// 超时
-	failTask(task, fmt.Sprintf("polling timeout after %d attempts", maxAttempts))
+	reason := buildPollingTimeoutReason(maxAttempts, lastPollFailure)
+	if failTask(task, reason) {
+		updateAsyncTaskConsumeLog(task, "failed", "async task failed", nil, reason)
+	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -136,6 +151,9 @@ func doQueryRequest(baseURL, apiKey, taskID string, config *dto.ChannelAsyncTask
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := service.GetHttpClient()
+	if client == nil {
+		client = http.DefaultClient
+	}
 	return client.Do(req)
 }
 
@@ -161,7 +179,7 @@ func extractResultList(body []byte, config *dto.ChannelAsyncTaskConfig) []map[st
 		return nil
 	}
 	var data any
-	if err := json.Unmarshal(body, &data); err != nil {
+	if err := common.Unmarshal(body, &data); err != nil {
 		return nil
 	}
 	for _, part := range parsePath(config.ResultListPath) {
@@ -198,6 +216,37 @@ func extractTaskDiagnostic(body []byte, config *dto.ChannelAsyncTaskConfig) (cod
 
 // ── DB helpers ───────────────────────────────────────────────────────────────
 
+func buildPollingHTTPFailure(statusCode int, body []byte) string {
+	message := compactPollingFailureMessage(string(body))
+	if message == "" {
+		return fmt.Sprintf("upstream returned HTTP %d", statusCode)
+	}
+	return fmt.Sprintf("upstream returned HTTP %d: %s", statusCode, message)
+}
+
+func buildPollingTimeoutReason(maxAttempts int, lastPollFailure string) string {
+	reason := fmt.Sprintf("polling timeout after %d attempts", maxAttempts)
+	lastPollFailure = compactPollingFailureMessage(lastPollFailure)
+	if lastPollFailure == "" {
+		return reason
+	}
+	return reason + "; last failure: " + lastPollFailure
+}
+
+func compactPollingFailureMessage(message string) string {
+	message = strings.TrimSpace(common.MaskSensitiveInfo(message))
+	if message == "" {
+		return ""
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	const maxLen = 500
+	runes := []rune(message)
+	if len(runes) <= maxLen {
+		return message
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
 // updateTaskProgress uses CAS to move the task from a non-terminal state to IN_PROGRESS.
 func updateTaskProgress(task *model.Task, newStatus model.TaskStatus, progress string, rawBody []byte) {
 	// 重新从 DB 加载最新状态
@@ -224,13 +273,13 @@ func updateTaskProgress(task *model.Task, newStatus model.TaskStatus, progress s
 }
 
 // succeedTask marks the task as successful with result data.
-func succeedTask(task *model.Task, resultData json.RawMessage, rawResponseBody string) {
+func succeedTask(task *model.Task, resultData json.RawMessage, rawResponseBody string) bool {
 	current, ok, err := model.GetByOnlyTaskId(task.TaskID)
 	if err != nil || !ok {
-		return
+		return false
 	}
 	if current.Status == model.TaskStatusSuccess || current.Status == model.TaskStatusFailure {
-		return
+		return false
 	}
 	fromStatus := current.Status
 	current.Status = model.TaskStatusSuccess
@@ -239,24 +288,26 @@ func succeedTask(task *model.Task, resultData json.RawMessage, rawResponseBody s
 	if len(resultData) > 0 && string(resultData) != "null" {
 		current.Data = resultData
 	}
-	_, _ = current.UpdateWithStatus(fromStatus)
+	won, err := current.UpdateWithStatus(fromStatus)
+	return err == nil && won
 }
 
 // failTask marks the task as failed.
-func failTask(task *model.Task, reason string) {
+func failTask(task *model.Task, reason string) bool {
 	current, ok, err := model.GetByOnlyTaskId(task.TaskID)
 	if err != nil || !ok {
-		return
+		return false
 	}
 	if current.Status == model.TaskStatusSuccess || current.Status == model.TaskStatusFailure {
-		return
+		return false
 	}
 	fromStatus := current.Status
 	current.Status = model.TaskStatusFailure
 	current.Progress = "100%"
 	current.FailReason = reason
 	current.FinishTime = time.Now().Unix()
-	_, _ = current.UpdateWithStatus(fromStatus)
+	won, err := current.UpdateWithStatus(fromStatus)
+	return err == nil && won
 }
 
 // PollSynchronouslyResult 同步轮询的返回结果。
@@ -277,17 +328,26 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		maxAttempts = 120
 	}
 
+	lastPollFailure := ""
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		time.Sleep(interval)
+		if attempt > 0 {
+			time.Sleep(interval)
+		}
 
 		resp, err := doQueryRequest(baseURL, apiKey, upstreamTaskID, config)
 		if err != nil {
+			lastPollFailure = "request failed: " + err.Error()
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			lastPollFailure = "read response failed: " + err.Error()
+			continue
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			lastPollFailure = buildPollingHTTPFailure(resp.StatusCode, body)
 			continue
 		}
 
@@ -308,12 +368,16 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		}
 	}
 
-	return nil, fmt.Errorf("async task polling timeout after %d attempts", maxAttempts)
+	return nil, fmt.Errorf("%s", buildPollingTimeoutReason(maxAttempts, lastPollFailure))
 }
 
 // extractImageURLs 从最终响应中提取图片 URL 列表。
 func extractImageURLs(body []byte, config *dto.ChannelAsyncTaskConfig) []string {
 	results := extractResultList(body, config)
+	return resultURLsFromResults(results, config)
+}
+
+func resultURLsFromResults(results []map[string]any, config *dto.ChannelAsyncTaskConfig) []string {
 	if len(results) == 0 {
 		return nil
 	}
