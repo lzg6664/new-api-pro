@@ -93,6 +93,12 @@ func TestHandleAsyncTaskSubmitRecordsConsumeLogOnSubmit(t *testing.T) {
 	require.Equal(t, "upstream_123", other["upstream_task_id"])
 	require.NotEmpty(t, other["task_id"])
 
+	var task model.Task
+	require.NoError(t, model.DB.Where("user_id = ?", 1).First(&task).Error)
+	require.Equal(t, "upstream_123", task.PrivateData.UpstreamTaskID)
+	require.Equal(t, "upstream_123", task.GetUpstreamTaskID())
+	require.NotEqual(t, "upstream_123", task.TaskID)
+
 	var user model.User
 	require.NoError(t, model.DB.First(&user, 1).Error)
 	require.Equal(t, 15, user.UsedQuota)

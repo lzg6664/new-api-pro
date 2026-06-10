@@ -3,8 +3,8 @@ package service
 import (
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/types"
@@ -26,9 +26,9 @@ func buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP string)
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := channelAffinityUsageCacheTestValue(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := channelAffinityUsageCacheTestValue(t, "fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -53,9 +53,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_ClaudeMode(t *testing.T) 
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := channelAffinityUsageCacheTestValue(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := channelAffinityUsageCacheTestValue(t, "fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	openAIUsage := &dto.Usage{
@@ -83,9 +83,9 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_MixedMode(t *testing.T) {
 }
 
 func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty(t *testing.T) {
-	ruleName := fmt.Sprintf("rule_%d", time.Now().UnixNano())
+	ruleName := channelAffinityUsageCacheTestValue(t, "rule")
 	usingGroup := "default"
-	keyFP := fmt.Sprintf("fp_%d", time.Now().UnixNano())
+	keyFP := channelAffinityUsageCacheTestValue(t, "fp")
 	ctx := buildChannelAffinityStatsContextForTest(ruleName, usingGroup, keyFP)
 
 	usage := &dto.Usage{
@@ -102,4 +102,10 @@ func TestObserveChannelAffinityUsageCacheByRelayFormat_UnsupportedModeKeepsEmpty
 	require.EqualValues(t, 1, stats.Hit)
 	require.EqualValues(t, 25, stats.CachedTokens)
 	require.Equal(t, "", stats.CachedTokenRateMode)
+}
+
+func channelAffinityUsageCacheTestValue(t *testing.T, prefix string) string {
+	t.Helper()
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	return fmt.Sprintf("%s_%s", prefix, name)
 }

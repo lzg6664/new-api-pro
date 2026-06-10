@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql/driver"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -122,6 +123,16 @@ type TaskBillingContext struct {
 func (t *Task) GetUpstreamTaskID() string {
 	if t.PrivateData.UpstreamTaskID != "" {
 		return t.PrivateData.UpstreamTaskID
+	}
+	if len(t.Data) > 0 {
+		var data struct {
+			UpstreamTaskID string `json:"upstream_task_id"`
+		}
+		if err := common.Unmarshal(t.Data, &data); err == nil {
+			if upstreamTaskID := strings.TrimSpace(data.UpstreamTaskID); upstreamTaskID != "" {
+				return upstreamTaskID
+			}
+		}
 	}
 	return t.TaskID
 }

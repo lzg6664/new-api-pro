@@ -138,6 +138,36 @@ func TestSnapshot_Roundtrip(t *testing.T) {
 	assert.JSONEq(t, string(task.Data), string(snap.Data))
 }
 
+func TestGetUpstreamTaskIDPrefersPrivateData(t *testing.T) {
+	task := &Task{
+		TaskID: "task_public",
+		PrivateData: TaskPrivateData{
+			UpstreamTaskID: "upstream_private",
+		},
+		Data: json.RawMessage(`{"upstream_task_id":"upstream_data"}`),
+	}
+
+	assert.Equal(t, "upstream_private", task.GetUpstreamTaskID())
+}
+
+func TestGetUpstreamTaskIDFallsBackToData(t *testing.T) {
+	task := &Task{
+		TaskID: "task_public",
+		Data:   json.RawMessage(`{"upstream_task_id":"upstream_data"}`),
+	}
+
+	assert.Equal(t, "upstream_data", task.GetUpstreamTaskID())
+}
+
+func TestGetUpstreamTaskIDFallsBackToTaskID(t *testing.T) {
+	task := &Task{
+		TaskID: "task_public",
+		Data:   json.RawMessage(`{"raw_submit_body":{}}`),
+	}
+
+	assert.Equal(t, "task_public", task.GetUpstreamTaskID())
+}
+
 // ---------------------------------------------------------------------------
 // UpdateWithStatus CAS — DB integration tests
 // ---------------------------------------------------------------------------

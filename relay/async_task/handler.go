@@ -68,6 +68,9 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 			OriginModelName:   info.OriginModelName,
 			UpstreamModelName: info.UpstreamModelName,
 		},
+		PrivateData: model.TaskPrivateData{
+			UpstreamTaskID: upstreamTaskID,
+		},
 	}
 	task.SetData(&taskData)
 	if err := task.Insert(); err != nil {
