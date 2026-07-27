@@ -90,6 +90,9 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 
 	submitBody := replaceByPath(rawBody, config.TaskIDPath, publicTaskID)
 
+	common.SysLog(fmt.Sprintf("[async-task] task=%s upstream=%s channel=%d syncMode=%v outputType=%s pollInterval=%ds",
+		publicTaskID, upstreamTaskID, info.ChannelId, config.SyncMode, config.OutputType, config.PollIntervalSec))
+
 	if !config.SyncMode {
 		pollInfo := *info
 		pollConfig := *config

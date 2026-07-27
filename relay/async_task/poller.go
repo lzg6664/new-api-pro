@@ -360,6 +360,10 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		pollChannelID = channelID[0]
 	}
 
+	common.SysLog(fmt.Sprintf("[sync-poll] BEGIN task=%s channel=%d pollInterval=%ds maxAttempts=%d queryPath=%s statusPath=%s",
+		upstreamTaskID, pollChannelID, config.PollIntervalSec, maxAttempts, config.QueryPath, config.StatusPath))
+
+	start := time.Now()
 	lastPollFailure := ""
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
@@ -373,6 +377,8 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		resp, err := doQueryRequest(baseURL, apiKey, upstreamTaskID, config)
 		if err != nil {
 			lastPollFailure = "request failed: " + err.Error()
+			common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d request-error elapsed=%.1fs: %s",
+				upstreamTaskID, attempt+1, maxAttempts, time.Since(start).Seconds(), err.Error()))
 			continue
 		}
 
@@ -384,22 +390,33 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		}
 		if resp.StatusCode >= http.StatusBadRequest {
 			lastPollFailure = buildPollingHTTPFailure(resp.StatusCode, body)
+			common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d http=%d elapsed=%.1fs",
+				upstreamTaskID, attempt+1, maxAttempts, resp.StatusCode, time.Since(start).Seconds()))
 			continue
 		}
 
 		rawStatus := extractByPath(body, config.StatusPath)
 		mapped := mapStatus(rawStatus, config.StatusMap)
 
+		common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d rawStatus=%q mapped=%q elapsed=%.1fs",
+			upstreamTaskID, attempt+1, maxAttempts, rawStatus, mapped, time.Since(start).Seconds()))
+
 		switch mapped {
 		case "succeeded", "completed", "success":
 			imageData := extractImageData(body, config)
 			if len(imageData) == 0 {
+				common.SysLog(fmt.Sprintf("[sync-poll] task=%s SUCCEEDED-but-no-image after %.1fs (result_list_path=%q result_url_path=%q)",
+					upstreamTaskID, time.Since(start).Seconds(), config.ResultListPath, config.ResultURLPath))
 				return nil, fmt.Errorf("async task succeeded but no image result found (result_list_path=%q, result_url_path=%q)", config.ResultListPath, config.ResultURLPath)
 			}
+			common.SysLog(fmt.Sprintf("[sync-poll] task=%s SUCCEEDED after %.1fs (%d attempts), images=%d",
+				upstreamTaskID, time.Since(start).Seconds(), attempt+1, len(imageData)))
 			return &PollSynchronouslyResult{ImageData: imageData, ImageURLs: imageURLsFromImageData(imageData), RawBody: body}, nil
 
 		case "failed", "failure", "error":
 			errCode, errMsg := extractTaskDiagnostic(body, config)
+			common.SysLog(fmt.Sprintf("[sync-poll] task=%s FAILED after %.1fs: [%s] %s",
+				upstreamTaskID, time.Since(start).Seconds(), errCode, errMsg))
 			return nil, fmt.Errorf("async task failed: [%s] %s", errCode, errMsg)
 
 		default:
@@ -407,6 +424,7 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		}
 	}
 
+	common.SysLog(fmt.Sprintf("[sync-poll] task=%s TIMEOUT after %.1fs (%d attempts)", upstreamTaskID, time.Since(start).Seconds(), maxAttempts))
 	return nil, fmt.Errorf("%s", buildPollingTimeoutReason(maxAttempts, lastPollFailure))
 }
 
