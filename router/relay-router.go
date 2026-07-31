@@ -83,6 +83,7 @@ func SetRelayRouter(router *gin.Engine) {
 		//http router
 		httpRouter := relayV1Router.Group("")
 		httpRouter.Use(middleware.Distribute())
+		httpRouter.Use(middleware.RelayTraceReceive()) // [RELAY-RECEIVE] 记录接收到的请求体（脱敏）
 
 		// claude related routes
 		httpRouter.POST("/messages", func(c *gin.Context) {

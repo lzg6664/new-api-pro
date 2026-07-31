@@ -17,6 +17,10 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 	if info.ChannelMeta == nil {
 		info.ChannelMeta = &common.ChannelMeta{}
 	}
+	// [RELAY-OWN] defer 触发于所有 return 路径，记录最终解析出的渠道/模型映射等自身参数
+	defer func() {
+		common.LogRelayOwnParams(c, info)
+	}()
 
 	isResponsesCompact := info.RelayMode == relayconstant.RelayModeResponsesCompact
 	originModelName := info.OriginModelName

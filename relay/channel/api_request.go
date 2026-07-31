@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -554,6 +555,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	logForwardRequest(c, req) // [RELAY-FORWARD] 记录转发给上游的请求（脱敏）
+
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
@@ -563,9 +566,84 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		return nil, errors.New("resp is nil")
 	}
 
+	logForwardResponse(c, resp, info.IsStream) // [RELAY-RESPONSE] 记录上游响应（流式仅记状态）
+
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()
 	return resp, nil
+}
+
+// logForwardRequest 记录转发给上游的请求：方法、URL、脱敏 headers、脱敏 body。
+// 读 req.Body 后用 bytes.Reader 还原，确保 client.Do 仍能读到完整 body。
+// 大 body（>8MB 或长度未知）只记 size，避免内存膨胀。
+func logForwardRequest(c *gin.Context, req *http.Request) {
+	if req == nil {
+		return
+	}
+	ct := req.Header.Get("Content-Type")
+	var bodyStr string
+	switch {
+	case strings.HasPrefix(strings.ToLower(ct), "multipart/"):
+		bodyStr = fmt.Sprintf("<multipart, %d bytes, body omitted>", req.ContentLength)
+	case req.Body != nil && req.ContentLength > 0 && req.ContentLength <= 8*1024*1024:
+		buf, rErr := io.ReadAll(req.Body)
+		req.Body.Close()
+		req.Body = io.NopCloser(bytes.NewReader(buf))
+		if rErr != nil {
+			bodyStr = fmt.Sprintf("<body read error: %v>", rErr)
+		} else {
+			bodyStr = common2.RedactAndTruncateBody(buf, ct)
+		}
+	case req.Body != nil:
+		bodyStr = fmt.Sprintf("<body omitted, contentLength=%d>", req.ContentLength)
+	default:
+		bodyStr = "<no body>"
+	}
+	logger.LogInfo(c, fmt.Sprintf(
+		"[RELAY-FORWARD] %s %s | headers=%s | body=%s",
+		req.Method, req.URL.String(), common2.RedactHeaders(req.Header), bodyStr,
+	))
+}
+
+// logForwardResponse 记录上游响应：状态、content-type、脱敏 body。
+// 流式（SSE）只记状态不读 body；非流式大响应（>4MB 或长度未知）只记 size，防 OOM。
+// 读 resp.Body 后用 bytes.Reader 还原，确保调用方仍能读到完整响应。
+func logForwardResponse(c *gin.Context, resp *http.Response, isStream bool) {
+	if resp == nil {
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	if isStream {
+		logger.LogInfo(c, fmt.Sprintf(
+			"[RELAY-RESPONSE] status=%d stream=true ct=%s [body omitted]",
+			resp.StatusCode, ct,
+		))
+		return
+	}
+	if resp.ContentLength < 0 || resp.ContentLength > 4*1024*1024 {
+		logger.LogInfo(c, fmt.Sprintf(
+			"[RELAY-RESPONSE] status=%d ct=%s [body omitted, contentLength=%d]",
+			resp.StatusCode, ct, resp.ContentLength,
+		))
+		return
+	}
+	var bodyStr string
+	if resp.Body != nil {
+		buf, rErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(buf))
+		if rErr != nil {
+			bodyStr = fmt.Sprintf("<body read error: %v>", rErr)
+		} else {
+			bodyStr = common2.RedactAndTruncateBody(buf, ct)
+		}
+	} else {
+		bodyStr = "<no body>"
+	}
+	logger.LogInfo(c, fmt.Sprintf(
+		"[RELAY-RESPONSE] status=%d ct=%s | body=%s",
+		resp.StatusCode, ct, bodyStr,
+	))
 }
 
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {
