@@ -18,9 +18,13 @@ var (
 	base64Re = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)
 	// dataImageRe 匹配 data:image/...;base64,... 形式的图片 URI
 	dataImageRe = regexp.MustCompile(`data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+`)
-	// longB64Re 匹配超长 base64 串（≥4096 字符），通常为内嵌图片/文件
-	longB64Re = regexp.MustCompile(`[A-Za-z0-9+/]{4096,}={0,2}`)
+	// b64WordRe 匹配候选 base64 串；是否为超长图片数据由回调按长度判定。
+	// 注意：Go RE2 重复计数上限为 1000，不能在此使用 {4096,} 之类的大重复。
+	b64WordRe = regexp.MustCompile(`[A-Za-z0-9+/]{2,}={0,2}`)
 )
+
+// longBase64Threshold 超过此长度的 base64 串视为内嵌图片/文件并剥离。
+const longBase64Threshold = 1000
 
 // imageFieldNames 是常见的图片字段名；命中后若值像 base64 且足够长则视为图片数据。
 // URL 不会命中（包含 : . 等非 base64 字符），故图片 URL 得以保留。
@@ -83,7 +87,7 @@ func isImageBase64Value(key, val string) bool {
 	if !looksBase64(val) {
 		return false
 	}
-	if len(val) > 4096 {
+	if len(val) >= longBase64Threshold {
 		return true
 	}
 	return len(val) > 512 && imageFieldNames[strings.ToLower(key)]
@@ -114,11 +118,15 @@ func redactWalk(v any, key string) any {
 
 // scrubRaw 用正则剥离 data:URI 与超长 base64（JSON 解析失败或非 JSON 时使用）。
 func scrubRaw(s string) string {
-	placeholder := func(m string) string {
+	s = dataImageRe.ReplaceAllStringFunc(s, func(m string) string {
 		return fmt.Sprintf("[image base64, %d bytes]", len(m))
-	}
-	s = dataImageRe.ReplaceAllStringFunc(s, placeholder)
-	s = longB64Re.ReplaceAllStringFunc(s, placeholder)
+	})
+	s = b64WordRe.ReplaceAllStringFunc(s, func(m string) string {
+		if len(m) >= longBase64Threshold {
+			return fmt.Sprintf("[image base64, %d bytes]", len(m))
+		}
+		return m
+	})
 	return s
 }
 
