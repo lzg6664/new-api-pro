@@ -497,6 +497,9 @@ func ProcessImageResponseAutoStore(ctx context.Context, response *dto.ImageRespo
 	cosSetting := system_setting.GetCOSSetting()
 	mode := strings.ToLower(strings.TrimSpace(cosSetting.ImageAutoStoreMode))
 	if !cosSetting.Enabled || mode == "" || mode == system_setting.ImageAutoStoreModeOff {
+		if len(response.Data) > 0 {
+			common.SysError(fmt.Sprintf("image auto-store skipped: enabled=%v mode=%q — url/b64 pass through as-is", cosSetting.Enabled, cosSetting.ImageAutoStoreMode))
+		}
 		return response, nil
 	}
 
@@ -509,6 +512,7 @@ func ProcessImageResponseAutoStore(ctx context.Context, response *dto.ImageRespo
 	for _, item := range response.Data {
 		nextItem := item
 		var err error
+		fromURL := false
 
 		switch {
 		case item.B64Json != "" && (mode == system_setting.ImageAutoStoreModeB64Only || mode == system_setting.ImageAutoStoreModeURLAndB64):
@@ -533,14 +537,22 @@ func ProcessImageResponseAutoStore(ctx context.Context, response *dto.ImageRespo
 			})
 			if err == nil {
 				nextItem.Url = result.Value
+				fromURL = true
 			}
+		case item.Url != "":
+			// b64_only 模式下 URL 原样直通（不转存）——显式留痕，避免「为什么没传 COS」排查黑洞
+			common.SysError(fmt.Sprintf("image auto-store: url item passes through (mode=%s does not store urls): %.120s", mode, item.Url))
 		}
 
 		if err != nil {
 			if cosSetting.ImageAutoStoreStrict {
 				return nil, err
 			}
+			common.SysError(fmt.Sprintf("image auto-store failed (mode=%s, has_url=%v, has_b64=%v), falling back to original value: %v",
+				mode, item.Url != "", item.B64Json != "", err))
 			nextItem = item
+		} else if fromURL || item.B64Json != "" {
+			common.SysLog(fmt.Sprintf("image auto-store: uploaded to cos: %s", nextItem.Url))
 		}
 
 		processed.Data = append(processed.Data, nextItem)

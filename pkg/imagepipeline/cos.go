@@ -57,22 +57,16 @@ func newCOSClient(setting *system_setting.COSSetting) (*cos.Client, error) {
 	return client, nil
 }
 
+// buildCOSObjectKey 生成内容寻址对象键：{path_prefix}/{sha256}{ext}（不含日期层级）。
 func buildCOSObjectKey(setting *system_setting.COSSetting, contentType string, data []byte) string {
 	sum := sha256.Sum256(data)
 	hash := hex.EncodeToString(sum[:])
 	ext := extensionByMimeType(contentType)
-	now := time.Now()
 	prefix := strings.Trim(strings.TrimSpace(setting.PathPrefix), "/")
 	if prefix == "" {
 		prefix = "images"
 	}
-	return path.Join(
-		prefix,
-		now.Format("2006"),
-		now.Format("01"),
-		now.Format("02"),
-		hash+ext,
-	)
+	return path.Join(prefix, hash+ext)
 }
 
 func extensionByMimeType(contentType string) string {
