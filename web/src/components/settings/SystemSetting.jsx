@@ -116,6 +116,7 @@ const SystemSetting = () => {
     'cos_setting.region': '',
     'cos_setting.bucket': '',
     'cos_setting.public_base_url': '',
+    'cos_setting.cdn_auth_key': '',
     'cos_setting.path_prefix': 'images',
     'cos_setting.read_timeout_seconds': 120,
     'cos_setting.max_upload_mb': 20,
@@ -479,6 +480,13 @@ const SystemSetting = () => {
       options.push({
         key: 'cos_setting.secret_key',
         value: nextValues['cos_setting.secret_key'],
+      });
+    }
+
+    if (nextValues['cos_setting.cdn_auth_key']) {
+      options.push({
+        key: 'cos_setting.cdn_auth_key',
+        value: nextValues['cos_setting.cdn_auth_key'],
       });
     }
 
@@ -949,6 +957,21 @@ const SystemSetting = () => {
                         label={t('最大上传(MB)')}
                         min={1}
                         style={{ width: '100%' }}
+                      />
+                    </Col>
+                  </Row>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.Input
+                        field="['cos_setting.cdn_auth_key']"
+                        label={t('CDN 鉴权密钥(TypeD)')}
+                        type='password'
+                        placeholder={t(
+                          '配置后返回的 CDN URL 带 TypeD 签名，留空表示保持不变',
+                        )}
                       />
                     </Col>
                   </Row>

@@ -620,6 +620,273 @@ func TestApplyParamOverrideMapParamNormalizeResolution(t *testing.T) {
 	assertJSONEqual(t, `{"model":"gettoken/banana-pro","prompt":"draw","resolution":"1k"}`, string(out))
 }
 
+// toApisGptImage2Override is the ToAPIs gpt-image-2 channel param_override config (verbatim).
+// Callers send token-only bodies: resolution (1k/2k/4k) + aspect_ratio (snake_case, must match
+// dto.ImageRequest's tag so the key survives re-marshal and reaches this engine) + image[] refs.
+// No pixel-size (WxH) entries: ToAPIs size supports all 13 ratios at every resolution tier.
+const toApisGptImage2Override = `{
+  "operations": [
+    {
+      "mode": "map_param",
+      "description": "兼容 reference_images/image_urls 到 ToAPIs reference_images",
+      "value": {
+        "sources": ["reference_images", "image_urls", "extra_fields.reference_images", "extra_fields.image_urls"],
+        "delete_sources": true,
+        "keep_origin": true
+      },
+      "to": "reference_images"
+    },
+    {
+      "mode": "copy",
+      "description": "OpenAI image -> reference_images（prefix 空串=存在性守卫，数组同样命中）",
+      "from": "image",
+      "to": "reference_images",
+      "conditions": [{"path": "image", "mode": "prefix", "value": ""}],
+      "logic": "OR"
+    },
+    {
+      "mode": "delete",
+      "description": "删除原始 image 字段",
+      "path": "image"
+    },
+    {
+      "mode": "map_param",
+      "description": "将 resolution 归一化为 ToAPIs resolution（纯 token，无像素换算）",
+      "value": {
+        "sources": ["resolution", "extra_fields.resolution"],
+        "normalize": true,
+        "map": {"1k": "1k", "1080p": "1k", "2k": "2k", "4k": "4k"}
+      },
+      "to": "resolution"
+    },
+    {
+      "mode": "map_param",
+      "description": "将比例/别名映射为 ToAPIs size",
+      "value": {
+        "sources": ["aspect_ratio", "aspectRatio", "ratio", "extra_fields.aspect_ratio", "extra_fields.aspectRatio", "extra_fields.ratio"],
+        "normalize": true,
+        "parse_pixel_ratio": true,
+        "map": {
+          "1:1": "1:1", "3:2": "3:2", "2:3": "2:3", "4:3": "4:3", "3:4": "3:4",
+          "5:4": "5:4", "4:5": "4:5", "16:9": "16:9", "9:16": "9:16",
+          "2:1": "2:1", "1:2": "1:2", "21:9": "21:9", "9:21": "9:21",
+          "square": "1:1", "portrait": "9:16", "landscape": "16:9",
+          "wide": "16:9", "ultrawide": "21:9"
+        }
+      },
+      "to": "size"
+    },
+    {
+      "mode": "set",
+      "description": "默认 resolution=1k",
+      "path": "resolution",
+      "value": "1k",
+      "keep_origin": true
+    },
+    {
+      "mode": "set",
+      "description": "仅指定 4k 时默认采用 16:9",
+      "path": "size",
+      "value": "16:9",
+      "keep_origin": true,
+      "conditions": [{"path": "resolution", "mode": "full", "value": "4k"}],
+      "logic": "OR"
+    },
+    {
+      "mode": "set",
+      "description": "默认比例 1:1",
+      "path": "size",
+      "value": "1:1",
+      "keep_origin": true
+    },
+    {
+      "mode": "set",
+      "description": "ToAPIs 固定返回 URL",
+      "path": "response_format",
+      "value": "url"
+    },
+    {"mode": "delete", "path": "image_urls"},
+    {"mode": "delete", "path": "aspectRatio"},
+    {"mode": "delete", "path": "aspect_ratio"},
+    {"mode": "delete", "path": "ratio"},
+    {"mode": "delete", "path": "image_size"},
+    {"mode": "delete", "path": "quality"},
+    {"mode": "delete", "path": "style"},
+    {"mode": "delete", "path": "background"},
+    {"mode": "delete", "path": "moderation"},
+    {"mode": "delete", "path": "output_format"},
+    {"mode": "delete", "path": "output_compression"},
+    {"mode": "delete", "path": "partial_images"},
+    {"mode": "delete", "path": "watermark"},
+    {"mode": "delete", "path": "watermark_enabled"},
+    {"mode": "delete", "path": "user"},
+    {"mode": "delete", "path": "user_id"},
+    {"mode": "delete", "path": "extra_fields"}
+  ]
+}`
+
+func TestApplyParamOverrideToApisGptImage2(t *testing.T) {
+	override := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(toApisGptImage2Override), &override); err != nil {
+		t.Fatalf("failed to parse ToAPIs override config: %v", err)
+	}
+
+	run := func(t *testing.T, input, want string) {
+		t.Helper()
+		out, err := ApplyParamOverride([]byte(input), override, nil)
+		if err != nil {
+			t.Fatalf("ApplyParamOverride returned error: %v", err)
+		}
+		assertJSONEqual(t, want, string(out))
+	}
+
+	t.Run("full body with reference image", func(t *testing.T) {
+		run(t,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"resolution":"2k","aspect_ratio":"16:9","quality":"high","response_format":"b64_json","image":["https://a.png"]}`,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"reference_images":["https://a.png"],"resolution":"2k","size":"16:9","response_format":"url"}`)
+	})
+
+	t.Run("minimal body defaults", func(t *testing.T) {
+		// no image (copy guarded, no error), no aspect_ratio -> size defaults to 1:1
+		run(t,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"resolution":"1k"}`,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"resolution":"1k","size":"1:1","response_format":"url"}`)
+	})
+
+	t.Run("bare 4k defaults to 16:9", func(t *testing.T) {
+		run(t,
+			`{"model":"gpt-image-2","prompt":"p","resolution":"4k"}`,
+			`{"model":"gpt-image-2","prompt":"p","resolution":"4k","size":"16:9","response_format":"url"}`)
+	})
+
+	t.Run("explicit 1k keeps ratio without bump", func(t *testing.T) {
+		// 1k 提升规则已删：ToAPIs size 各档位支持全部比例
+		run(t,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"resolution":"1k","aspect_ratio":"16:9"}`,
+			`{"model":"gpt-image-2","prompt":"p","n":1,"resolution":"1k","size":"16:9","response_format":"url"}`)
+	})
+}
+
+// getTokenImageEditOverride is the gettoken (wudi-api) image-edit channel param_override
+// config (verbatim). Upstream body is camelCase: prompt + imageUrls[] (required, image
+// edit) + aspectRatio (10 ratios; omitted = adaptive to input image) + resolution
+// (1k/2k/4k, default 1k, doc recommends explicit). camelCase keys never reach this
+// engine (dto.ImageRequest drops Extra on re-marshal), so the mapping builds them from
+// DTO tags: aspect_ratio -> aspectRatio, image -> imageUrls. Ratio tokens outside the
+// 10-value enum (2:1/1:2/9:21) fold to the nearest supported ratio; no WxH pixel entries.
+const getTokenImageEditOverride = `{
+  "operations": [
+    {"mode": "delete", "description": "删除 OpenAI 多余的 model 字段", "path": "model"},
+    {"mode": "delete", "description": "删除 OpenAI 多余的 n 字段", "path": "n"},
+    {
+      "mode": "map_param",
+      "description": "将比例 token/别名映射为 gettoken aspectRatio（枚举仅 10 种，2:1/1:2/9:21 折叠到最近比例）",
+      "value": {
+        "sources": ["aspect_ratio", "aspectRatio", "ratio", "extra_fields.aspect_ratio", "extra_fields.aspectRatio", "extra_fields.ratio"],
+        "normalize": true,
+        "parse_pixel_ratio": true,
+        "map": {
+          "1:1": "1:1", "16:9": "16:9", "9:16": "9:16", "4:3": "4:3", "3:4": "3:4",
+          "3:2": "3:2", "2:3": "2:3", "5:4": "5:4", "4:5": "4:5", "21:9": "21:9",
+          "2:1": "16:9", "1:2": "9:16", "9:21": "9:16", "7:3": "21:9",
+          "square": "1:1", "portrait": "9:16", "landscape": "16:9",
+          "wide": "16:9", "ultrawide": "21:9"
+        }
+      },
+      "to": "aspectRatio"
+    },
+    {
+      "mode": "map_param",
+      "description": "将 resolution 归一化为 gettoken resolution（纯 token，无像素换算）",
+      "value": {
+        "sources": ["resolution", "extra_fields.resolution"],
+        "normalize": true,
+        "map": {"1k": "1k", "1080p": "1k", "2k": "2k", "4k": "4k"}
+      },
+      "to": "resolution"
+    },
+    {
+      "mode": "set",
+      "description": "gettoken 文档建议显式传 resolution，缺省默认 1k",
+      "path": "resolution",
+      "value": "1k",
+      "keep_origin": true
+    },
+    {
+      "mode": "copy",
+      "description": "OpenAI image 数组 -> gettoken imageUrls（prefix 空串=存在性守卫，数组同样命中）",
+      "from": "image",
+      "to": "imageUrls",
+      "conditions": [{"path": "image", "mode": "prefix", "value": ""}],
+      "logic": "OR"
+    },
+    {"mode": "delete", "description": "删除原始 image 字段", "path": "image"},
+    {"mode": "delete", "path": "size"},
+    {"mode": "delete", "path": "aspect_ratio"},
+    {"mode": "delete", "path": "ratio"},
+    {"mode": "delete", "path": "image_size"},
+    {"mode": "delete", "path": "image_urls"},
+    {"mode": "delete", "path": "mask_url"},
+    {"mode": "delete", "path": "response_format"},
+    {"mode": "delete", "path": "quality"},
+    {"mode": "delete", "path": "style"},
+    {"mode": "delete", "path": "background"},
+    {"mode": "delete", "path": "moderation"},
+    {"mode": "delete", "path": "output_format"},
+    {"mode": "delete", "path": "output_compression"},
+    {"mode": "delete", "path": "partial_images"},
+    {"mode": "delete", "path": "watermark"},
+    {"mode": "delete", "path": "watermark_enabled"},
+    {"mode": "delete", "path": "user"},
+    {"mode": "delete", "path": "user_id"},
+    {"mode": "delete", "path": "extra_fields"}
+  ]
+}`
+
+func TestApplyParamOverrideGetTokenImageEdit(t *testing.T) {
+	override := map[string]interface{}{}
+	if err := json.Unmarshal([]byte(getTokenImageEditOverride), &override); err != nil {
+		t.Fatalf("failed to parse gettoken override config: %v", err)
+	}
+
+	run := func(t *testing.T, input, want string) {
+		t.Helper()
+		out, err := ApplyParamOverride([]byte(input), override, nil)
+		if err != nil {
+			t.Fatalf("ApplyParamOverride returned error: %v", err)
+		}
+		assertJSONEqual(t, want, string(out))
+	}
+
+	t.Run("full body with reference images", func(t *testing.T) {
+		run(t,
+			`{"model":"gettoken/gpt-image-2","prompt":"p","n":1,"resolution":"2k","aspect_ratio":"16:9","quality":"high","response_format":"b64_json","image":["https://a.png","https://b.png"]}`,
+			`{"prompt":"p","imageUrls":["https://a.png","https://b.png"],"aspectRatio":"16:9","resolution":"2k"}`)
+	})
+
+	t.Run("missing aspect ratio stays adaptive, resolution defaults to 1k", func(t *testing.T) {
+		// gettoken 文档：不传 aspectRatio = 自适应图片尺寸（映射不强制默认比例）
+		run(t,
+			`{"model":"gettoken/gpt-image-2","prompt":"p","image":["https://a.png"]}`,
+			`{"prompt":"p","imageUrls":["https://a.png"],"resolution":"1k"}`)
+	})
+
+	t.Run("unsupported ratio folds to nearest", func(t *testing.T) {
+		run(t,
+			`{"model":"m","prompt":"p","resolution":"1k","aspect_ratio":"2:1"}`,
+			`{"prompt":"p","resolution":"1k","aspectRatio":"16:9"}`)
+		run(t,
+			`{"model":"m","prompt":"p","resolution":"1k","aspect_ratio":"9:21"}`,
+			`{"prompt":"p","resolution":"1k","aspectRatio":"9:16"}`)
+	})
+
+	t.Run("uppercase resolution normalized", func(t *testing.T) {
+		run(t,
+			`{"model":"m","prompt":"p","resolution":"4K","aspect_ratio":"21:9"}`,
+			`{"prompt":"p","resolution":"4k","aspectRatio":"21:9"}`)
+	})
+}
+
 func TestApplyParamOverrideMapParamKeepOrigin(t *testing.T) {
 	input := []byte(`{"aspectRatio":"4:3","size":"1024x1024","prompt":"draw"}`)
 	override := map[string]interface{}{

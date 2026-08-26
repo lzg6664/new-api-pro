@@ -9,12 +9,15 @@ const (
 )
 
 type COSSetting struct {
-	Enabled                bool   `json:"enabled"`
-	SecretID               string `json:"secret_id"`
-	SecretKey              string `json:"secret_key"`
-	Region                 string `json:"region"`
-	Bucket                 string `json:"bucket"`
-	PublicBaseURL          string `json:"public_base_url"`
+	Enabled       bool   `json:"enabled"`
+	SecretID      string `json:"secret_id"`
+	SecretKey     string `json:"secret_key"`
+	Region        string `json:"region"`
+	Bucket        string `json:"bucket"`
+	PublicBaseURL string `json:"public_base_url"`
+	// CDNAuthKey 为 PublicBaseURL 启用 TypeD+SHA256 签名（与 snapstory 后端 CosStorageService.signCdnUrl 算法一致），
+	// 空则返回未签名公网 URL
+	CDNAuthKey             string `json:"cdn_auth_key"`
 	PathPrefix             string `json:"path_prefix"`
 	ReadTimeoutSeconds     int    `json:"read_timeout_seconds"`
 	MaxUploadMB            int    `json:"max_upload_mb"`
