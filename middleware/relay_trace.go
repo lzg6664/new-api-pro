@@ -14,6 +14,11 @@ import (
 // BodyStorage.Bytes() 为非破坏性读取，不影响后续 UnmarshalBodyReusable 等消费方。
 func RelayTraceReceive() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if !common.DebugEnabled {
+			// 全量接收日志含 body 脱敏解析（可达 MB 级），仅 DEBUG 开启时记录
+			c.Next()
+			return
+		}
 		method := c.Request.Method
 		path := c.Request.URL.Path
 		ct := c.GetHeader("Content-Type")

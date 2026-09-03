@@ -1,0 +1,62 @@
+[
+  {
+    "name": "banana2-image-to-image",
+    "enabled": true,
+    "priority": 100,
+    "match": {
+      "request_path_prefix": "/v1/images",
+      "method": "POST",
+      "model_prefix": "gemini-3.1-flash-image-preview",
+      "request_body_field_exists": "image"
+    },
+    "target": {
+      "method": "POST",
+      "path": "/openapi/v1/banana2/image-to-image"
+    }
+  },
+  {
+    "name": "banana2-text-to-image",
+    "enabled": true,
+    "priority": 90,
+    "match": {
+      "request_path_prefix": "/v1/images",
+      "method": "POST",
+      "model_prefix": "gemini-3.1-flash-image-preview",
+      "request_body_field_missing": "image"
+    },
+    "target": {
+      "method": "POST",
+      "path": "/openapi/v1/banana2/text-to-image"
+    }
+  },
+  {
+    "name": "banana-pro-image-to-image",
+    "enabled": true,
+    "priority": 100,
+    "match": {
+      "request_path_prefix": "/v1/images",
+      "method": "POST",
+      "model_prefix": "gemini-3-pro-image-preview",
+      "request_body_field_exists": "image"
+    },
+    "target": {
+      "method": "POST",
+      "path": "/openapi/v1/banana_pro/image-to-image"
+    }
+  },
+  {
+    "name": "banana-pro-text-to-image",
+    "enabled": true,
+    "priority": 90,
+    "match": {
+      "request_path_prefix": "/v1/images",
+      "method": "POST",
+      "model_prefix": "gemini-3-pro-image-preview",
+      "request_body_field_missing": "image"
+    },
+    "target": {
+      "method": "POST",
+      "path": "/openapi/v1/banana_pro/text-to-image"
+    }
+  }
+]

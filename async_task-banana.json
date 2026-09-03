@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "sync_mode": true,
+  "task_id_path": "taskId",
+  "status_path": "status",
+  "error_code_path": "errorCode",
+  "error_msg_path": "errorMessage",
+  "success_statuses": ["QUEUED", "RUNNING"],
+  "query_method": "POST",
+  "query_path": "/openapi/v1/query",
+  "query_body": {
+    "taskId": "${task_id}"
+  },
+  "status_map": {
+    "QUEUED": "pending",
+    "RUNNING": "running",
+    "SUCCESS": "succeeded",
+    "FAILED": "failed",
+    "TIMEOUT": "failed"
+  },
+  "result_list_path": "results",
+  "result_url_path": "url",
+  "result_type_path": "outputType",
+  "output_type": "image",
+  "poll_interval_sec": 5,
+  "max_poll_attempts": 120
+}

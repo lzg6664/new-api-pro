@@ -31,6 +31,7 @@ services:
     command: --log-dir /app/logs
     ports:
       - "3000:3000"
+    # - "8005:8005"                   # ENABLE_PPROF=true 时从宿主机访问 :8005/debug/pprof 用，验证期放开
     volumes:
       - ./data:/data
       - ./logs:/app/logs
@@ -44,6 +45,10 @@ services:
       - BATCH_UPDATE_ENABLED=true
       - MAX_REQUEST_BODY_MB=1024
       - NODE_NAME=new-api-node-1
+      - MEMORY_CACHE_ENABLED=true      # 渠道检查走进程内存缓存（2026-09-03 积累修复配套）
+      - TASK_TIMEOUT_MINUTES=60        # 崩溃遗留任务 1 小时清扫（默认 24 小时）
+      - ENABLE_PPROF=true              # 验证期开启，观测完可删
+    #  - TASK_RETENTION_DAYS=7         # 终态任务保留天数，默认 7；想更快瘦身设 3；0=关闭清理
     #  - SESSION_SECRET=random_string  # 多机部署时必须设置
     #  - STREAMING_TIMEOUT=300         # 流模式超时(秒), 默认120
     depends_on:

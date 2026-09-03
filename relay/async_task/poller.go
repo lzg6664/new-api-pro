@@ -2,6 +2,7 @@ package async_task
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,11 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 )
+
+// pollQueryTimeout 单次上游状态查询的硬超时。
+// 共享 client 默认无超时（RELAY_TIMEOUT=0），一次挂起的上游连接会把轮询协程永久占住，
+// 这里对每次查询单独限时兜底（cancel 须在 body 读取完毕之后）。
+const pollQueryTimeout = 15 * time.Second
 
 // TaskAsyncSubmitData is stored in Task.Data for async task submissions.
 type TaskAsyncSubmitData struct {
@@ -51,28 +57,39 @@ func StartTaskPolling(task *model.Task, info *relaycommon.RelayInfo, config *dto
 		time.Sleep(interval)
 		if err := ensureChannelPollingEnabled(info.ChannelId); err != nil {
 			lastPollFailure = err.Error()
-			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d skipped for task %s: %s", attempt+1, maxAttempts, task.TaskID, err.Error()))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d skipped for task %s: %s", attempt+1, maxAttempts, task.TaskID, err.Error()))
+			}
 			continue
 		}
 
-		// 查询上游任务状态
-		resp, err := doQueryRequest(baseURL, info.ApiKey, upstreamTaskID, config)
+		// 查询上游任务状态（单次查询带硬超时）
+		reqCtx, cancel := context.WithTimeout(context.Background(), pollQueryTimeout)
+		resp, err := doQueryRequest(reqCtx, baseURL, info.ApiKey, upstreamTaskID, config)
 		if err != nil {
+			cancel()
 			lastPollFailure = "request failed: " + err.Error()
-			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, err.Error()))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, err.Error()))
+			}
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel()
 		if err != nil {
 			lastPollFailure = "read response failed: " + err.Error()
-			common.SysLog(fmt.Sprintf("async_task poll read body failed: %s", err.Error()))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("async_task poll read body failed: %s", err.Error()))
+			}
 			continue
 		}
 		if resp.StatusCode >= http.StatusBadRequest {
 			lastPollFailure = buildPollingHTTPFailure(resp.StatusCode, body)
-			common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, lastPollFailure))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("async_task poll attempt %d/%d failed: %s", attempt+1, maxAttempts, lastPollFailure))
+			}
 			continue
 		}
 
@@ -126,7 +143,7 @@ func parseSubmitDataFromTask(task *model.Task) (*TaskAsyncSubmitData, error) {
 	return &data, nil
 }
 
-func doQueryRequest(baseURL, apiKey, taskID string, config *dto.ChannelAsyncTaskConfig) (*http.Response, error) {
+func doQueryRequest(ctx context.Context, baseURL, apiKey, taskID string, config *dto.ChannelAsyncTaskConfig) (*http.Response, error) {
 	fullURL := baseURL + "/" + strings.TrimLeft(config.QueryPath, "/")
 	fullURL = strings.ReplaceAll(fullURL, "${task_id}", taskID)
 
@@ -140,13 +157,13 @@ func doQueryRequest(baseURL, apiKey, taskID string, config *dto.ChannelAsyncTask
 			bodyMap[k] = strings.ReplaceAll(v, "${task_id}", taskID)
 		}
 		bodyBytes, _ := common.Marshal(bodyMap)
-		req, err = http.NewRequest(http.MethodPost, fullURL, bytes.NewReader(bodyBytes))
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, fullURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 	default:
-		req, err = http.NewRequest(http.MethodGet, fullURL, nil)
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -263,7 +280,8 @@ func ensureChannelPollingEnabled(channelID int) error {
 	if channelID <= 0 {
 		return nil
 	}
-	channel, err := model.GetChannelById(channelID, true)
+	// 走内存缓存，避免每个在途任务每 5 秒一次全行 DB 查询；未开内存缓存时内部自动回退 DB
+	channel, err := model.CacheGetChannel(channelID)
 	if err != nil {
 		return fmt.Errorf("failed to get channel #%d status: %w", channelID, err)
 	}
@@ -345,7 +363,9 @@ type PollSynchronouslyResult struct {
 
 // PollSynchronously 同步轮询上游任务状态，直到终态或超时。
 // 阻塞调用方，适用于将异步任务转为同步等待的场景。
-func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.ChannelAsyncTaskConfig, channelID ...int) (*PollSynchronouslyResult, error) {
+// ctx 通常传 c.Request.Context()：客户端断开时立即返回 ctx.Err()，调用方据此脱尾收尾，
+// 避免为已断开的客户端盲跑满整个轮询预算（600s）还做无人接收的 COS 转存。
+func PollSynchronously(ctx context.Context, baseURL, apiKey, upstreamTaskID string, config *dto.ChannelAsyncTaskConfig, channelID ...int) (*PollSynchronouslyResult, error) {
 	interval := time.Duration(config.PollIntervalSec) * time.Second
 	if interval < 3*time.Second {
 		interval = 3 * time.Second
@@ -360,46 +380,66 @@ func PollSynchronously(baseURL, apiKey, upstreamTaskID string, config *dto.Chann
 		pollChannelID = channelID[0]
 	}
 
-	common.SysLog(fmt.Sprintf("[sync-poll] BEGIN task=%s channel=%d pollInterval=%ds maxAttempts=%d queryPath=%s statusPath=%s",
-		upstreamTaskID, pollChannelID, config.PollIntervalSec, maxAttempts, config.QueryPath, config.StatusPath))
+	if common.DebugEnabled {
+		common.SysLog(fmt.Sprintf("[sync-poll] BEGIN task=%s channel=%d pollInterval=%ds maxAttempts=%d queryPath=%s statusPath=%s",
+			upstreamTaskID, pollChannelID, config.PollIntervalSec, maxAttempts, config.QueryPath, config.StatusPath))
+	}
 
 	start := time.Now()
 	lastPollFailure := ""
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
-			time.Sleep(interval)
+			timer := time.NewTimer(interval)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 
 		if err := ensureChannelPollingEnabled(pollChannelID); err != nil {
 			return nil, err
 		}
 
-		resp, err := doQueryRequest(baseURL, apiKey, upstreamTaskID, config)
+		reqCtx, cancel := context.WithTimeout(ctx, pollQueryTimeout)
+		resp, err := doQueryRequest(reqCtx, baseURL, apiKey, upstreamTaskID, config)
 		if err != nil {
+			cancel()
 			lastPollFailure = "request failed: " + err.Error()
-			common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d request-error elapsed=%.1fs: %s",
-				upstreamTaskID, attempt+1, maxAttempts, time.Since(start).Seconds(), err.Error()))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d request-error elapsed=%.1fs: %s",
+					upstreamTaskID, attempt+1, maxAttempts, time.Since(start).Seconds(), err.Error()))
+			}
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel()
 		if err != nil {
 			lastPollFailure = "read response failed: " + err.Error()
 			continue
 		}
 		if resp.StatusCode >= http.StatusBadRequest {
 			lastPollFailure = buildPollingHTTPFailure(resp.StatusCode, body)
-			common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d http=%d elapsed=%.1fs",
-				upstreamTaskID, attempt+1, maxAttempts, resp.StatusCode, time.Since(start).Seconds()))
+			if common.DebugEnabled {
+				common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d http=%d elapsed=%.1fs",
+					upstreamTaskID, attempt+1, maxAttempts, resp.StatusCode, time.Since(start).Seconds()))
+			}
 			continue
 		}
 
 		rawStatus := extractByPath(body, config.StatusPath)
 		mapped := mapStatus(rawStatus, config.StatusMap)
 
-		common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d rawStatus=%q mapped=%q elapsed=%.1fs",
-			upstreamTaskID, attempt+1, maxAttempts, rawStatus, mapped, time.Since(start).Seconds()))
+		if common.DebugEnabled {
+			common.SysLog(fmt.Sprintf("[sync-poll] task=%s attempt=%d/%d rawStatus=%q mapped=%q elapsed=%.1fs",
+				upstreamTaskID, attempt+1, maxAttempts, rawStatus, mapped, time.Since(start).Seconds()))
+		}
 
 		switch mapped {
 		case "succeeded", "completed", "success":

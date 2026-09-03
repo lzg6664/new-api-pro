@@ -91,12 +91,19 @@ func sweepTimedOutTasks(ctx context.Context) {
 func TaskPollingLoop() {
 	for {
 		time.Sleep(time.Duration(15) * time.Second)
-		common.SysLog("任务进度轮询开始")
+		if common.DebugEnabled {
+			common.SysLog("任务进度轮询开始")
+		}
 		ctx := context.TODO()
 		sweepTimedOutTasks(ctx)
 		allTasks := model.GetAllUnFinishSyncTasks(constant.TaskQueryLimit)
 		platformTask := make(map[constant.TaskPlatform][]*model.Task)
 		for _, t := range allTasks {
+			if t.Platform == constant.TaskPlatformAsyncTask {
+				// 自定义异步生图任务有自己的轮询器（sync 轮询 / StartTaskPolling），
+				// 平台号不映射任何 TaskAdaptor，交给 UpdateVideoTasks 只会拿错端点空转甚至误杀任务
+				continue
+			}
 			platformTask[t.Platform] = append(platformTask[t.Platform], t)
 		}
 		for platform, tasks := range platformTask {
@@ -133,7 +140,9 @@ func TaskPollingLoop() {
 
 			DispatchPlatformUpdate(platform, taskChannelM, taskM)
 		}
-		common.SysLog("任务进度轮询完成")
+		if common.DebugEnabled {
+			common.SysLog("任务进度轮询完成")
+		}
 	}
 }
 
@@ -142,6 +151,8 @@ func DispatchPlatformUpdate(platform constant.TaskPlatform, taskChannelM map[int
 	switch platform {
 	case constant.TaskPlatformMidjourney:
 		// MJ 轮询由其自身处理，这里预留入口
+	case constant.TaskPlatformAsyncTask:
+		// 自定义异步生图任务由 relay/async_task 自行轮询，防御性兜底
 	case constant.TaskPlatformSuno:
 		_ = UpdateSunoTasks(context.Background(), taskChannelM, taskM)
 	default:

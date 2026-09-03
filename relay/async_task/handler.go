@@ -1,10 +1,11 @@
 package async_task
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,9 +43,10 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 	info.PublicTaskID = publicTaskID
 
+	// 只存 UpstreamTaskID：RawSubmitBody 含 b64 参考图（MB 级/行）且全链路无读取方，
+	// 存进 tasks 表会让该表随历史任务无界膨胀。字段保留以兼容旧行反序列化。
 	taskData := TaskAsyncSubmitData{
 		UpstreamTaskID: upstreamTaskID,
-		RawSubmitBody:  json.RawMessage(rawBody),
 	}
 
 	action := "generate"
@@ -54,7 +56,7 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 
 	task := &model.Task{
 		TaskID:     publicTaskID,
-		Platform:   constant.TaskPlatform(strconv.Itoa(info.ChannelType)),
+		Platform:   constant.TaskPlatformAsyncTask,
 		UserId:     info.UserId,
 		Group:      info.TokenGroup,
 		ChannelId:  info.ChannelId,
@@ -95,6 +97,7 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 
 	if !config.SyncMode {
 		pollInfo := *info
+		pollInfo.Request = nil // 后台协程不需要请求载荷，避免长期持有 MB 级 b64 参考图
 		pollConfig := *config
 		go StartTaskPolling(task, &pollInfo, &pollConfig)
 
@@ -105,8 +108,16 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 	}
 
 	baseURL := strings.TrimRight(info.ChannelBaseUrl, "/")
-	result, err := PollSynchronously(baseURL, info.ApiKey, upstreamTaskID, config, info.ChannelId)
+	result, err := PollSynchronously(c.Request.Context(), baseURL, info.ApiKey, upstreamTaskID, config, info.ChannelId)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// 客户端已断开（调用方超时/取消），响应不可达：脱尾后台把任务推进到真实终态，
+			// 不写响应也不直接判 FAILURE——慢任务可能仍在正常生成，只是没人等它了。
+			// 收尾协程受同一轮询预算约束，天然有界。
+			common.SysLog(fmt.Sprintf("[async-task] task=%s client disconnected (%v), finish in background", publicTaskID, err))
+			finishDetachedTask(task, info, config, upstreamTaskID, baseURL)
+			return nil
+		}
 		if failTask(task, err.Error()) {
 			updateAsyncTaskConsumeLog(task, "failed", "async task failed", nil, err.Error())
 		}
@@ -128,6 +139,32 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 		return newAPIError
 	}
 	return nil
+}
+
+// finishDetachedTask 客户端已断开时的脱尾收尾：后台续跑轮询到终态并落库/更新消费日志，不写响应。
+// 复制 info 并丢弃 Request 载荷，防止后台协程长期持有 MB 级 b64 参考图。
+func finishDetachedTask(task *model.Task, info *relaycommon.RelayInfo, config *dto.ChannelAsyncTaskConfig, upstreamTaskID, baseURL string) {
+	pollInfo := *info
+	pollInfo.Request = nil
+	pollConfig := *config
+	go func() {
+		result, err := PollSynchronously(context.Background(), baseURL, pollInfo.ApiKey, upstreamTaskID, &pollConfig, pollInfo.ChannelId)
+		if err != nil {
+			if failTask(task, "client disconnected; "+err.Error()) {
+				updateAsyncTaskConsumeLog(task, "failed", "async task failed (client disconnected)", nil, err.Error())
+			}
+			return
+		}
+		imageResp := dto.ImageResponse{
+			Data:    make([]dto.ImageData, 0, len(result.ImageData)),
+			Created: time.Now().Unix(),
+		}
+		imageResp.Data = append(imageResp.Data, result.ImageData...)
+		resultBytes, _ := common.Marshal(imageResp)
+		if succeedTask(task, json.RawMessage(resultBytes), string(result.RawBody)) {
+			updateAsyncTaskConsumeLog(task, "succeeded", "async task succeeded", result.ImageURLs, "")
+		}
+	}()
 }
 
 func asyncTaskQuota(info *relaycommon.RelayInfo, task *model.Task) int {
@@ -295,6 +332,8 @@ func updateAsyncTaskConsumeLog(task *model.Task, status string, content string, 
 	if !ok || logID <= 0 {
 		return
 	}
+	// 终态只更新一次，处理完即从 map 删除，防止 asyncTaskConsumeLogIDs 随任务数无限增长
+	defer asyncTaskConsumeLogIDs.Delete(task.TaskID)
 
 	other := map[string]interface{}{
 		"async_task_status": status,

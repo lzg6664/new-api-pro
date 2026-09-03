@@ -1,0 +1,27 @@
+{
+  "enabled": true,
+  "sync_mode": true,
+  "task_id_path": "id",
+  "status_path": "status",
+  "error_code_path": "error.code",
+  "error_msg_path": "error.message",
+  "success_statuses": ["pending", "queued", "in_progress", "completed"],
+  "query_method": "GET",
+  "query_path": "/v1/images/generations/${task_id}",
+  "query_body": {
+    "taskId": "${task_id}"
+  },
+  "status_map": {
+    "pending": "pending",
+    "queued": "pending",
+    "in_progress": "running",
+    "completed": "succeeded",
+    "failed": "failed"
+  },
+  "result_list_path": "result.data",
+  "result_url_path": "url",
+  "result_type_path": "outputType",
+  "output_type": "image",
+  "poll_interval_sec": 5,
+  "max_poll_attempts": 120
+}
