@@ -577,8 +577,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 // 读 req.Body 后用 bytes.Reader 还原，确保 client.Do 仍能读到完整 body。
 // 大 body（>8MB 或长度未知）只记 size，避免内存膨胀。
 func logForwardRequest(c *gin.Context, req *http.Request) {
-	if !common2.DebugEnabled {
-		// 转发日志需读取并脱敏解析最多 8MB body，仅 DEBUG 开启时记录
+	if !common2.RelayTraceEnabled {
+		// 转发日志需读取并脱敏解析最多 8MB body，RELAY_TRACE=false 可关闭
 		return
 	}
 	if req == nil {
@@ -613,8 +613,8 @@ func logForwardRequest(c *gin.Context, req *http.Request) {
 // 流式（SSE）只记状态不读 body；非流式大响应（>4MB 或长度未知）只记 size，防 OOM。
 // 读 resp.Body 后用 bytes.Reader 还原，确保调用方仍能读到完整响应。
 func logForwardResponse(c *gin.Context, resp *http.Response, isStream bool) {
-	if !common2.DebugEnabled {
-		// 响应日志需读取并脱敏解析最多 4MB body，仅 DEBUG 开启时记录
+	if !common2.RelayTraceEnabled {
+		// 响应日志需读取并脱敏解析最多 4MB body，RELAY_TRACE=false 可关闭
 		return
 	}
 	if resp == nil {

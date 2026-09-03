@@ -19,7 +19,7 @@ banana/tiapi 均为 `sync_mode: true`（120 次 × 5s）：每个生图请求占
 |---|---|---|
 | A 轮询生命周期 | `relay/async_task/poller.go` `handler.go` | `PollSynchronously` 接收 ctx（`c.Request.Context()`），sleep 改为 ctx 感知 select；单次上游查询 15s 硬超时（`NewRequestWithContext`）；客户端断开时**脱尾后台收尾**（复制 info、丢弃 Request 载荷、后台跑到真实终态、不写响应、不误判 FAILURE）；后台轮询路径同样不再持有请求载荷 |
 | B 平台双轮询 | `constant/task.go` `handler.go` `service/task_polling.go` | 新增 `TaskPlatformAsyncTask="async"`，自定义异步任务落库改用之；15s 循环跳过该平台 |
-| C 日志降噪 | `poller.go` `relay_trace.go` `api_request.go` `relay-openai.go` `task_polling.go` `pipeline.go` | 尝试级 `[sync-poll]`、`[RELAY-*]` 全量转发日志、COS 过程日志统一 `DEBUG=true` 才输出；保留每任务一行终态日志与真实错误；删除裸 `fmt.Println` 响应体打印 |
+| C 日志降噪 | `poller.go` `relay_trace.go` `api_request.go` `relay-openai.go` `task_polling.go` `pipeline.go` | 尝试级 `[sync-poll]`、`[RELAY-RECEIVE]` 入站日志、COS 过程日志统一 `DEBUG=true` 才输出；保留每任务一行终态日志与真实错误；删除裸 `fmt.Println` 响应体打印。**发往厂商的 `[RELAY-FORWARD]`（地址+脱敏 body）与 `[RELAY-RESPONSE]`（含结果 URL）保持默认开启**，由 `RELAY_TRACE` 控制（默认 true，设 false 关闭） |
 | D tasks 表瘦身 | `handler.go` `service/task_cleanup.go`(新) `constant/env.go` `main.go` | 不再存 `RawSubmitBody`；新增每小时清理循环物理删除超过 `TASK_RETENTION_DAYS`（默认 7，0=禁用）的终态任务 |
 | E 杂项 | `poller.go` `handler.go` | 渠道可用性检查改走 `CacheGetChannel`（内存缓存，未启用时自动回退 DB）；`asyncTaskConsumeLogIDs` 终态处理后删除条目 |
 
@@ -32,6 +32,9 @@ banana/tiapi 均为 `sync_mode: true`（120 次 × 5s）：每个生图请求占
      fail_reason='legacy custom async task cleanup'
    WHERE platform='1' AND status NOT IN ('SUCCESS','FAILURE')
      AND data LIKE '%raw_submit_body%';
+   -- PostgreSQL 下 data 是 json 类型，LIKE 前需显式转文本：
+   --   AND data::text LIKE '%raw_submit_body%'
+   -- （SQLite/MySQL 的 data 列为 TEXT，直接 LIKE 即可）
    ```
 
 2. 建议环境变量：

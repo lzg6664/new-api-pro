@@ -72,6 +72,10 @@ var EmailLoginAuthServerList = []string{
 var DebugEnabled bool
 var MemoryCacheEnabled bool
 
+// RelayTraceEnabled 控制发往上游厂商的转发日志（[RELAY-FORWARD] 地址+脱敏 body、
+// [RELAY-RESPONSE] 厂商响应含结果 URL）。默认开启，RELAY_TRACE=false 可关。
+var RelayTraceEnabled = true
+
 var LogConsumeEnabled = true
 
 var TLSInsecureSkipVerify bool
