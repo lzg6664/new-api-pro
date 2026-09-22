@@ -354,6 +354,16 @@ func failTask(task *model.Task, reason string) bool {
 	return err == nil && won
 }
 
+// MarkTaskFailed / MarkTaskSucceeded 是 failTask/succeedTask 的导出包装，
+// 供 async_task 包外（同步渠道 async=1 的后台执行协程 relay/async_image.go）复用同一套 CAS 终态化。
+func MarkTaskFailed(task *model.Task, reason string) bool {
+	return failTask(task, reason)
+}
+
+func MarkTaskSucceeded(task *model.Task, data json.RawMessage) bool {
+	return succeedTask(task, data, "")
+}
+
 // PollSynchronouslyResult 同步轮询的返回结果。
 type PollSynchronouslyResult struct {
 	ImageData []dto.ImageData // 最终提取到的图片数据

@@ -90,6 +90,14 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
 
+	// async=1：客户端要求「提交即返回内部 task_id」。渠道已启用 async_task 时，
+	// 任务型上游响应会在 DoResponse 内由 HandleAsyncTaskSubmit 的 clientAsync 分支处理；
+	// 其余（同步上游）在此分叉，转后台协程执行并立即写回执。
+	if c.Query("async") == "1" &&
+		!(info.ChannelOtherSettings.AsyncTask != nil && info.ChannelOtherSettings.AsyncTask.IsActive()) {
+		return handleAsyncImageRelay(c, info, adaptor, requestBody, statusCodeMappingStr, request)
+	}
+
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)

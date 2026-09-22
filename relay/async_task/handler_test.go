@@ -361,6 +361,96 @@ func TestHandleAsyncTaskSubmitSyncModeStopsWhenChannelDisabled(t *testing.T) {
 	require.Contains(t, task.FailReason, "channel #1001 is disabled")
 }
 
+func TestHandleAsyncTaskSubmitAsyncReceiptShape(t *testing.T) {
+	setupAsyncTaskTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations?async=1", nil)
+	c.Set("token_name", "test-token")
+	c.Set("username", "alice")
+
+	config := &dto.ChannelAsyncTaskConfig{
+		Enabled:         true,
+		TaskIDPath:      "taskId",
+		StatusPath:      "status",
+		SuccessStatuses: []string{"QUEUED"},
+		QueryPath:       "/query",
+		PollIntervalSec: 60,
+		MaxPollAttempts: 1,
+		OutputType:      "image",
+	}
+	info := newAsyncTaskTestRelayInfo()
+
+	err := HandleAsyncTaskSubmit(c, info, "upstream_123", []byte(`{"taskId":"upstream_123","status":"QUEUED"}`), config)
+	require.NoError(t, err)
+
+	// 固定回执形状：{"task_id": <内部 id>, "status": "submitted"}
+	var receipt dto.ImageTaskSubmitReceipt
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &receipt))
+	require.Equal(t, "submitted", receipt.Status)
+	require.NotEmpty(t, receipt.TaskID)
+	require.NotEqual(t, "upstream_123", receipt.TaskID)
+
+	var task model.Task
+	require.NoError(t, model.DB.Where("user_id = ?", 1).First(&task).Error)
+	require.Equal(t, receipt.TaskID, task.TaskID)
+	require.EqualValues(t, model.TaskStatusSubmitted, task.Status)
+	require.EqualValues(t, constant.TaskPlatformAsyncTask, task.Platform)
+}
+
+func TestHandleAsyncTaskSubmitClientAsyncOverridesSyncMode(t *testing.T) {
+	setupAsyncTaskTestDB(t)
+	gin.SetMode(gin.TestMode)
+
+	// sync_mode=true 但客户端带 async=1：不得进入 PollSynchronously（查询服务器零调用），立即回执
+	var queried atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queried.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"SUCCESS","results":[{"url":"https://example.com/final.png"}]}`))
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations?async=1", nil)
+	c.Set("token_name", "test-token")
+	c.Set("username", "alice")
+
+	config := &dto.ChannelAsyncTaskConfig{
+		Enabled:         true,
+		SyncMode:        true,
+		TaskIDPath:      "taskId",
+		StatusPath:      "status",
+		SuccessStatuses: []string{"QUEUED"},
+		QueryMethod:     "GET",
+		QueryPath:       "/query",
+		PollIntervalSec: 60, // 后台轮询协程先 sleep，断言窗口内不会触达查询服务器
+		MaxPollAttempts: 1,
+		StatusMap:       map[string]string{"SUCCESS": "succeeded", "FAILED": "failed"},
+		ResultListPath:  "results",
+		ResultURLPath:   "url",
+		OutputType:      "image",
+	}
+	info := newAsyncTaskTestRelayInfo()
+	info.ChannelBaseUrl = server.URL
+
+	err := HandleAsyncTaskSubmit(c, info, "upstream_123", []byte(`{"taskId":"upstream_123","status":"QUEUED"}`), config)
+	require.NoError(t, err)
+	require.False(t, queried.Load())
+
+	var receipt dto.ImageTaskSubmitReceipt
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &receipt))
+	require.Equal(t, "submitted", receipt.Status)
+	require.NotEmpty(t, receipt.TaskID)
+
+	var task model.Task
+	require.NoError(t, model.DB.Where("user_id = ?", 1).First(&task).Error)
+	require.EqualValues(t, model.TaskStatusSubmitted, task.Status)
+}
+
 func newAsyncTaskTestRelayInfo() *relaycommon.RelayInfo {
 	return &relaycommon.RelayInfo{
 		UserId:          1,

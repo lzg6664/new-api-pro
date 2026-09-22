@@ -90,20 +90,30 @@ func HandleAsyncTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo,
 		}
 	}
 
-	submitBody := replaceByPath(rawBody, config.TaskIDPath, publicTaskID)
+	// clientAsync：客户端显式要求异步（POST /v1/images/generations?async=1）。
+	// 即使渠道配置为 sync_mode=true，也立即返回固定回执并转入后台轮询，
+	// 让调用方（Java 网关）拿到内部 task_id 后自行通过查询端点轮询。
+	clientAsync := c != nil && c.Request != nil && c.Query("async") == "1"
 
-	common.SysLog(fmt.Sprintf("[async-task] task=%s upstream=%s channel=%d syncMode=%v outputType=%s pollInterval=%ds",
-		publicTaskID, upstreamTaskID, info.ChannelId, config.SyncMode, config.OutputType, config.PollIntervalSec))
+	common.SysLog(fmt.Sprintf("[async-task] task=%s upstream=%s channel=%d syncMode=%v clientAsync=%v outputType=%s pollInterval=%ds",
+		publicTaskID, upstreamTaskID, info.ChannelId, config.SyncMode, clientAsync, config.OutputType, config.PollIntervalSec))
 
-	if !config.SyncMode {
+	if !config.SyncMode || clientAsync {
 		pollInfo := *info
 		pollInfo.Request = nil // 后台协程不需要请求载荷，避免长期持有 MB 级 b64 参考图
 		pollConfig := *config
 		go StartTaskPolling(task, &pollInfo, &pollConfig)
 
+		receipt, err := common.Marshal(dto.ImageTaskSubmitReceipt{
+			TaskID: publicTaskID,
+			Status: "submitted",
+		})
+		if err != nil {
+			return err
+		}
 		c.Writer.Header().Set("Content-Type", "application/json")
 		c.Writer.WriteHeader(http.StatusOK)
-		_, err := c.Writer.Write(submitBody)
+		_, err = c.Writer.Write(receipt)
 		return err
 	}
 

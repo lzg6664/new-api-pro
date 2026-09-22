@@ -137,6 +137,10 @@ type RelayInfo struct {
 	// AsyncTaskHandled 为 true 时表示异步任务已被处理（response 已写入客户端），
 	// 调用方应跳过正常的后处理（计费结算等），由异步任务轮询流程接管。
 	AsyncTaskHandled bool
+	// ImageCapture 非 nil 时，WriteImageResponse 不写客户端响应，
+	// 而是把经过 COS 自动转存后的最终响应存入该指针。
+	// 仅供同步渠道 async=1 提交的后台协程捕获结果使用（relay/async_image.go）。
+	ImageCapture *dto.ImageResponse
 	// Billing 是计费会话，封装了预扣费/结算/退款的统一生命周期。
 	// 免费模型时为 nil。
 	Billing BillingSettler

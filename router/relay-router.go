@@ -166,6 +166,10 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
 
+	// 图片异步任务查询（POST /v1/images/generations?async=1 的回执轮询端点）。
+	// 仅需 TokenAuth（relayV1Router 组已挂），无需 Distribute 选渠道。
+	relayV1Router.GET("/images/tasks/:task_id", controller.GetImageTaskById)
+
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))
 	relayMjRouter.Use(middleware.SystemPerformanceCheck())
