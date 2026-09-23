@@ -34,11 +34,23 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func InitHttpClient() {
+	// 阶段级超时（建连/TLS 握手/空闲回收）：只卡各阶段、不卡总时长，
+	// 合法的慢速同步生图（视频管线 sync 调用 10min+）不受影响。
+	// 不设 ResponseHeaderTimeout / Client.Timeout——上游生成完才回包是同步渠道的正常语义。
+	// 背景：2026-09-23 toapis.cn 30 分钟连接黑洞期，无任何阶段超时导致 read 挂到
+	// OS 级 TCP 重传放弃（15~18min）才报错，远超所有调用方的耐心窗口。
 	transport := &http.Transport{
 		MaxIdleConns:        common.RelayMaxIdleConns,
 		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
 		ForceAttemptHTTP2:   true,
 		Proxy:               http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
 	if common.TLSInsecureSkipVerify {
 		transport.TLSClientConfig = common.InsecureTLSConfig

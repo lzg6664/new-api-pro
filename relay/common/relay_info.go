@@ -141,6 +141,11 @@ type RelayInfo struct {
 	// 而是把经过 COS 自动转存后的最终响应存入该指针。
 	// 仅供同步渠道 async=1 提交的后台协程捕获结果使用（relay/async_image.go）。
 	ImageCapture *dto.ImageResponse
+	// UpstreamSubmitTimeout > 0 时，为本次上游调用（含响应体读取）加整体硬上限。
+	// 仅用于任务式渠道的 clientAsync 提交（async=1）：任务式上游提交应秒回 taskId，
+	// 黑洞时按此上限快速失败（映射 504 触发换渠道/调用方重试），而不是等 OS 级 TCP
+	// 重传放弃（15min+）拖垮调用方的超时窗口（2026-09-23 toapis 黑洞 30min 事故）。
+	UpstreamSubmitTimeout time.Duration
 	// Billing 是计费会话，封装了预扣费/结算/退款的统一生命周期。
 	// 免费模型时为 nil。
 	Billing BillingSettler

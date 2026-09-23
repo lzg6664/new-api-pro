@@ -557,13 +557,32 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	logForwardRequest(c, req) // [RELAY-FORWARD] 记录转发给上游的请求（脱敏）
 
+	// clientAsync 提交上限：deadline 覆盖上游调用与 doRequest 返回后 DoResponse 的 body 读取
+	// （taskId 在 body 里），故不能 defer cancel——改为 resp.Body 关闭时释放（cancelBody），
+	// 请求失败路径就地 cancel；成功后即使忘了关 body，ctx 也会在 deadline 到期自动释放。
+	var releaseSubmitDeadline context.CancelFunc
+	if info != nil && info.UpstreamSubmitTimeout > 0 {
+		var submitCtx context.Context
+		submitCtx, releaseSubmitDeadline = context.WithTimeout(req.Context(), info.UpstreamSubmitTimeout)
+		req = req.WithContext(submitCtx)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
+		if releaseSubmitDeadline != nil {
+			releaseSubmitDeadline()
+		}
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
+		if releaseSubmitDeadline != nil {
+			releaseSubmitDeadline()
+		}
 		return nil, errors.New("resp is nil")
+	}
+	if releaseSubmitDeadline != nil {
+		resp.Body = &cancelBody{ReadCloser: resp.Body, cancel: releaseSubmitDeadline}
 	}
 
 	logForwardResponse(c, resp, info.IsStream) // [RELAY-RESPONSE] 记录上游响应（流式仅记状态）
@@ -571,6 +590,18 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()
 	return resp, nil
+}
+
+// cancelBody 包装响应 body：Close 时释放 clientAsync 提交上限的 ctx cancel（提前回收 deadline timer）。
+type cancelBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (b *cancelBody) Close() error {
+	b.once.Do(b.cancel)
+	return b.ReadCloser.Close()
 }
 
 // logForwardRequest 记录转发给上游的请求：方法、URL、脱敏 headers、脱敏 body。
